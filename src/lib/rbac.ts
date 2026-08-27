@@ -339,9 +339,9 @@ export function getMenuPermission(user: AppUser | null, menuId: string): 'none' 
   // Global Readonly mode
   if (user.isReadonly) return 'read';
 
-  // Menu Kelola Pengguna memerlukan hak pengelolaan user
+  // Menu Kelola Pengguna secara ketat HANYA dapat diakses oleh Admin
   if (menuId === 'users') {
-    if (!canManageUsers(user)) {
+    if (!isUserAdmin(user) && user.role !== 'admin' && user.username !== 'admin') {
       return 'none';
     }
   }

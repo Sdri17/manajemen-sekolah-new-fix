@@ -5,14 +5,49 @@ import {
   Firestore, 
   doc, 
   getDocFromServer,
-  persistentLocalCache,
-  persistentMultipleTabManager
+  memoryLocalCache
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 import defaultConfig from '../../firebase-applet-config.json';
 
 // Silence internal SDK logs to prevent 10s backend connection timeout warning noise
 setLogLevel('silent');
+
+// Safely clear any legacy or bloated Firestore storage keys from localStorage to prevent QuotaExceededError
+if (typeof window !== 'undefined' && window.localStorage) {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && (
+        key.startsWith('firestore_targets') || 
+        key.startsWith('firestore_mutations') || 
+        key.startsWith('firestore_z_')
+      )) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach(k => {
+      try {
+        localStorage.removeItem(k);
+      } catch (_e) {}
+    });
+  } catch (_e) {
+    // Ignore storage cleanup error
+  }
+}
+
+/**
+ * Safe helper for localStorage.setItem to swallow QuotaExceededError gracefully
+ */
+export function safeLocalStorageSetItem(key: string, value: string): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.warn(`[localStorage] Quota exceeded or error writing key "${key}":`, err);
+  }
+}
 
 export interface FirebaseConfigType {
   projectId: string;
@@ -93,7 +128,7 @@ export function getActiveDatabaseId(): string {
       const trimmed = customDb.trim();
       // If the active config belongs to user's custom project or doesn't match old remix ID, clear stale ID
       if (trimmed.includes('ai-studio-remix') || trimmed.includes('acc88558')) {
-        localStorage.removeItem('active_firestore_database_id');
+        try { localStorage.removeItem('active_firestore_database_id'); } catch (_e) {}
         return activeFirebaseConfig.firestoreDatabaseId || '(default)';
       }
       return trimmed;
@@ -106,7 +141,7 @@ export function createFirestoreInstance(databaseId: string): Firestore {
   try {
     return initializeFirestore(app, {
       experimentalForceLongPolling: true,
-      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+      localCache: memoryLocalCache()
     }, databaseId);
   } catch (_e) {
     try {

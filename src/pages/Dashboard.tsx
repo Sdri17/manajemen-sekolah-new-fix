@@ -12,7 +12,7 @@ import {
   getStoredReferenceIntegritySummary, 
   ReferenceIntegritySummary 
 } from '../lib/integrityObserver';
-import { Users, BookOpen, CheckSquare, TrendingUp, Filter, BarChart2, PieChart as PieIcon, Cloud, AlertCircle, CheckSquare as CheckIcon, Clock, Calendar, Download, Phone, AlertTriangle, CheckCircle2, Wallet, RefreshCw, ShieldAlert, Layers, Box, Sparkles, GraduationCap } from 'lucide-react';
+import { Users, BookOpen, CheckSquare, TrendingUp, Filter, BarChart2, PieChart as PieIcon, Cloud, AlertCircle, CheckSquare as CheckIcon, Clock, Calendar, Download, Phone, AlertTriangle, CheckCircle2, Wallet, RefreshCw, ShieldAlert, ShieldCheck, Layers, Box, Sparkles, GraduationCap } from 'lucide-react';
 import NaikKelasModal from '../components/NaikKelasModal';
 import { startOfMonth, endOfMonth, parseISO, format, isWithinInterval, startOfWeek, endOfWeek } from 'date-fns';
 import { getCurrentUser, getAssignedClasses, filterStudentsForUser, filterRecordsForUser } from '../lib/rbac';
@@ -1214,6 +1214,29 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
             </div>
 
             <div className="flex items-center gap-3 shrink-0 flex-wrap sm:flex-nowrap">
+              {/* Explicit Sync Status & Class Filter Transparency Indicator */}
+              <div className="bg-slate-900/90 border border-emerald-500/40 px-3.5 py-2 rounded-xl text-xs font-medium text-slate-300 flex items-center gap-2.5 shadow-inner">
+                <div className="relative flex items-center justify-center shrink-0">
+                  {isSyncing ? (
+                    <RefreshCw size={18} className="text-emerald-400 animate-spin" />
+                  ) : (
+                    <ShieldCheck size={18} className="text-emerald-400" />
+                  )}
+                  {!isSyncing && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-[10px] text-emerald-400 font-mono font-bold uppercase tracking-wider">Sync Status</p>
+                    <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      TERFILTER {classLabel}
+                    </span>
+                  </div>
+                  <p className="font-semibold text-slate-100 text-xs mt-0.5 flex items-center gap-1">
+                    <span>{isSyncing ? 'Menyinkronkan Rombel...' : `Terisolasi & Terfilter Ke Kelas ${classLabel}`}</span>
+                  </p>
+                </div>
+              </div>
+
               <div className="bg-slate-900/80 border border-slate-700/60 px-3.5 py-2 rounded-xl text-xs font-medium text-slate-300 flex items-center gap-2">
                 <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
                 <div>

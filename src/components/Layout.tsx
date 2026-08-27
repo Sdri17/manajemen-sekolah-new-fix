@@ -2,7 +2,7 @@ import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { Users, FileSpreadsheet, CheckSquare, Settings as SettingsIcon, LogOut, Cloud, LayoutDashboard, School, HelpCircle, Download, Menu, X, Sun, Moon, Calendar, ClipboardList, BookOpen, ChevronDown, ChevronRight, MessageSquare, ShieldCheck, Wifi, WifiOff, Signal, RefreshCw, Wallet, Database, Bell } from 'lucide-react';
 import SyncProgressBar from './SyncProgressBar';
 import { Settings, AppUser, store } from '../lib/store';
-import { canAccessMenu, canCrudMenu, getDisplayRoleLabel, filterStudentsForUser, filterRecordsForUser } from '../lib/rbac';
+import { canAccessMenu, canCrudMenu, isUserAdmin, getDisplayRoleLabel, filterStudentsForUser, filterRecordsForUser } from '../lib/rbac';
 import toast from 'react-hot-toast';
 import TaskNotificationWidget from './TaskNotificationWidget';
 // Helper for resilient lazy loading with auto-retry on transient fetch errors
@@ -383,10 +383,15 @@ export default function Layout({
     { id: 'panduan', label: 'Panduan', icon: HelpCircle },
   ];
 
+  const isSystemAdmin = isUserAdmin(user) || user?.role === 'admin' || user?.username === 'admin';
+
   const coreMenus = allCoreMenus.filter(m => canAccessMenu(user, m.id));
   const pengelolaanMenus = allPengelolaanMenus.filter(m => canAccessMenu(user, m.id));
   const reportMenus = allReportMenus.filter(m => canAccessMenu(user, m.id));
-  const systemMenus = allSystemMenus.filter(m => canAccessMenu(user, m.id));
+  const systemMenus = allSystemMenus.filter(m => {
+    if (m.id === 'users' && !isSystemAdmin) return false;
+    return canAccessMenu(user, m.id);
+  });
 
   const allMenus = [...allCoreMenus, ...allPengelolaanMenus, ...allReportMenus, ...allSystemMenus];
 
@@ -1028,7 +1033,7 @@ export default function Layout({
               {activeMenu === 'rapor' && <Rapor role={role as any} settings={settings} setSettings={setSettings} semester={settings?.semester_aktif || ''} />}
               {activeMenu === 'ekspor' && <EksporTerpadu settings={settings} />}
               {activeMenu === 'identitas' && canAccessMenu(user, 'identitas') && <IdentitasSekolah settings={settings} setSettings={setSettings} />}
-              {activeMenu === 'users' && canAccessMenu(user, 'users') && <Pengaturan role={role as any} settings={settings} setSettings={setSettings} currentUser={user} initialTab="users" />}
+              {activeMenu === 'users' && isSystemAdmin && <Pengaturan role={role as any} settings={settings} setSettings={setSettings} currentUser={user} initialTab="users" />}
               {activeMenu === 'pengaturan' && canAccessMenu(user, 'pengaturan') && <Pengaturan role={role as any} settings={settings} setSettings={setSettings} currentUser={user} initialTab="umum" />}
               {activeMenu === 'diagnostik' && canAccessMenu(user, 'diagnostik') && <DiagnostikDatabase />}
               {activeMenu === 'dokumentasi' && canAccessMenu(user, 'dokumentasi') && <Dokumentasi />}

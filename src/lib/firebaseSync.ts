@@ -1586,6 +1586,27 @@ export async function pushAllLocalDataToFirebase(
  */
 export async function fetchLatestUsersFromFirebase(): Promise<AppUser[]> {
   try {
+    const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
+
+    // Non-admin users are restricted to fetching only their own user profile document
+    if (!isAdmin) {
+      if (currentUser?.id || currentUser?.username) {
+        const docId = currentUser.id || currentUser.username;
+        const uRef = doc(db, getTenantCollectionName('users'), docId);
+        const uSnap = await getDoc(uRef).catch(() => null);
+        if (uSnap && uSnap.exists()) {
+          const uData = uSnap.data() as AppUser;
+          await store.users.setItem(uData.id || docId, uData);
+          if (uData.username) {
+            await store.users.setItem(uData.username.toLowerCase(), uData);
+          }
+          return [uData];
+        }
+      }
+      return currentUser ? [currentUser] : [];
+    }
+
     const targetCol = getTenantCollectionName('users');
     const colRef = collection(db, targetCol);
     const snap = await Promise.race([
@@ -1651,11 +1672,12 @@ export async function pullAllRemoteDataFromFirebase(
 
     // Get active user credentials for explicit role-based teacher filtering
     const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
-    const isTeacher = currentUser && (currentUser.role === 'guru' || currentUser.role === 'wali_kelas' || currentUser.role === 'guru_mapel');
+    const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
+    const isTeacher = currentUser && (currentUser.role === 'guru' || currentUser.role === 'wali_kelas' || currentUser.role === 'guru_mapel' || currentUser.role === 'staf');
     const teacherClasses: string[] = Array.isArray(currentUser?.assignedClasses) && currentUser.assignedClasses.length > 0
       ? currentUser.assignedClasses
       : (currentUser?.assignedKelas && currentUser.assignedKelas !== 'semua' ? [currentUser.assignedKelas] : []);
-    const isRestrictedTeacher = isTeacher && teacherClasses.length > 0 && !teacherClasses.includes('*');
+    const isRestrictedTeacher = !isAdmin && isTeacher && teacherClasses.length > 0 && !teacherClasses.includes('*');
 
     // Fetch all collections in parallel from Firestore with smart delta & pagination
     await Promise.all(
@@ -1667,6 +1689,25 @@ export async function pullAllRemoteDataFromFirebase(
         try {
           const storeInstance = (store as any)[storeName];
           if (!storeInstance) return;
+
+          // NON-ADMIN SCOPE SECURITY: Prevent non-admin users from making full queries to 'users' collection
+          if (!isAdmin && storeName === 'users') {
+            if (currentUser?.id || currentUser?.username) {
+              const userDocId = currentUser.id || currentUser.username;
+              try {
+                const uRef = doc(db, getTenantCollectionName('users'), userDocId);
+                const uSnap = await getDoc(uRef).catch(() => null);
+                if (uSnap && uSnap.exists()) {
+                  const uData = uSnap.data();
+                  await store.users.setItem(uData.id || userDocId, uData);
+                }
+              } catch (e) {
+                // Ignore silent user fetch error
+              }
+            }
+            completedCols++;
+            return;
+          }
 
           const targetCol = getPartitionedCollectionName(storeName);
           const colRef = collection(db, targetCol);
@@ -1686,9 +1727,10 @@ export async function pullAllRemoteDataFromFirebase(
             }
           }
 
-          // Build explicit query filters for teacher role
+          // Build explicit query filters for authorized collection scope
           const queryConstraints: any[] = [];
-          if (isRestrictedTeacher && ['students', 'grades', 'attendance', 'raporCapaian'].includes(storeName)) {
+          const classBasedCols = ['students', 'grades', 'attendance', 'raporCapaian', 'kas', 'kasLogs', 'tasks', 'roster', 'piket', 'jurnal'];
+          if (isRestrictedTeacher && classBasedCols.includes(storeName)) {
             if (teacherClasses.length === 1) {
               queryConstraints.push(where('kelas', '==', teacherClasses[0]));
             } else if (teacherClasses.length > 1 && teacherClasses.length <= 10) {
@@ -2015,12 +2057,30 @@ export function initFirebaseRealtimeSync() {
   // Trigger automatic silent pull of remote data (including users and settings) on startup
   pullAllRemoteDataFromFirebase(false, true).catch((e) => console.warn('[FirebaseSync] Initial pull error:', e));
 
+  // Get user credentials for realtime collection scoping
+  const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
+  const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
+  const teacherClasses: string[] = Array.isArray(currentUser?.assignedClasses) && currentUser.assignedClasses.length > 0
+    ? currentUser.assignedClasses
+    : (currentUser?.assignedKelas && currentUser.assignedKelas !== 'semua' ? [currentUser.assignedKelas] : []);
+  const isRestrictedTeacher = !isAdmin && teacherClasses.length > 0 && !teacherClasses.includes('*');
+
   // Listen to operational collections with Background Buffer pattern and smart delta filtering
   OPERATIONAL_REALTIME_COLLECTIONS.forEach((colName) => {
     try {
       const targetCol = getPartitionedCollectionName(colName);
       const colRef = collection(db, targetCol);
-      const unsubscribe = onSnapshot(colRef, async (snapshot) => {
+      let listenTarget: any = colRef;
+      const classBasedCols = ['students', 'grades', 'attendance', 'raporCapaian', 'kas', 'kasLogs', 'tasks', 'roster', 'piket', 'jurnal'];
+      if (isRestrictedTeacher && classBasedCols.includes(colName)) {
+        if (teacherClasses.length === 1) {
+          listenTarget = query(colRef, where('kelas', '==', teacherClasses[0]));
+        } else if (teacherClasses.length > 1 && teacherClasses.length <= 10) {
+          listenTarget = query(colRef, where('kelas', 'in', teacherClasses));
+        }
+      }
+
+      const unsubscribe = onSnapshot(listenTarget, async (snapshot: any) => {
         if (snapshot.metadata.hasPendingWrites) {
           // Local write originating from this device, skip listener processing to prevent loopback
           return;
@@ -2158,10 +2218,26 @@ export async function fetchStudentsPaginatedFromFirestore(
   startAfterDoc: QueryDocumentSnapshot | null = null
 ): Promise<PaginatedResult<any>> {
   try {
+    const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
+    const teacherClasses: string[] = Array.isArray(currentUser?.assignedClasses) && currentUser.assignedClasses.length > 0
+      ? currentUser.assignedClasses
+      : (currentUser?.assignedKelas && currentUser.assignedKelas !== 'semua' ? [currentUser.assignedKelas] : []);
+    const isRestricted = !isAdmin && teacherClasses.length > 0 && !teacherClasses.includes('*');
+
     const colRef = collection(db, 'students');
-    let q = query(colRef, orderBy('nama', 'asc'), firestoreLimit(pageSize));
+    const constraints: any[] = [];
+    if (isRestricted) {
+      if (teacherClasses.length === 1) {
+        constraints.push(where('kelas', '==', teacherClasses[0]));
+      } else if (teacherClasses.length > 1) {
+        constraints.push(where('kelas', 'in', teacherClasses));
+      }
+    }
+
+    let q = query(colRef, ...constraints, orderBy('nama', 'asc'), firestoreLimit(pageSize));
     if (startAfterDoc) {
-      q = query(colRef, orderBy('nama', 'asc'), firestoreStartAfter(startAfterDoc), firestoreLimit(pageSize));
+      q = query(colRef, ...constraints, orderBy('nama', 'asc'), firestoreStartAfter(startAfterDoc), firestoreLimit(pageSize));
     }
     const snapshot = await getDocs(q);
     const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
@@ -2186,10 +2262,26 @@ export async function fetchKasPaginatedFromFirestore(
   startAfterDoc: QueryDocumentSnapshot | null = null
 ): Promise<PaginatedResult<any>> {
   try {
+    const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
+    const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
+    const teacherClasses: string[] = Array.isArray(currentUser?.assignedClasses) && currentUser.assignedClasses.length > 0
+      ? currentUser.assignedClasses
+      : (currentUser?.assignedKelas && currentUser.assignedKelas !== 'semua' ? [currentUser.assignedKelas] : []);
+    const isRestricted = !isAdmin && teacherClasses.length > 0 && !teacherClasses.includes('*');
+
     const colRef = collection(db, 'kas');
-    let q = query(colRef, orderBy('tanggal', 'desc'), firestoreLimit(pageSize));
+    const constraints: any[] = [];
+    if (isRestricted) {
+      if (teacherClasses.length === 1) {
+        constraints.push(where('kelas', '==', teacherClasses[0]));
+      } else if (teacherClasses.length > 1) {
+        constraints.push(where('kelas', 'in', teacherClasses));
+      }
+    }
+
+    let q = query(colRef, ...constraints, orderBy('tanggal', 'desc'), firestoreLimit(pageSize));
     if (startAfterDoc) {
-      q = query(colRef, orderBy('tanggal', 'desc'), firestoreStartAfter(startAfterDoc), firestoreLimit(pageSize));
+      q = query(colRef, ...constraints, orderBy('tanggal', 'desc'), firestoreStartAfter(startAfterDoc), firestoreLimit(pageSize));
     }
     const snapshot = await getDocs(q);
     const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
