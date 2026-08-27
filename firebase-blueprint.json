@@ -1,0 +1,95 @@
+{
+  "schema": [
+    {
+      "collection": "students",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Siswa" },
+        { "name": "nama", "type": "string", "required": true, "description": "Nama Siswa" }
+      ]
+    },
+    {
+      "collection": "grades",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Nilai" }
+      ]
+    },
+    {
+      "collection": "attendance",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Kehadiran" }
+      ]
+    },
+    {
+      "collection": "tasks",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Tugas" },
+        { "name": "OwnerID", "type": "string", "required": false, "description": "ID Pemilik Dokument (Row-Level Security)" },
+        { "name": "ownerId", "type": "string", "required": false, "description": "ID Pemilik Dokument" }
+      ]
+    },
+    {
+      "collection": "roster",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Roster" }
+      ]
+    },
+    {
+      "collection": "piket",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Piket" }
+      ]
+    },
+    {
+      "collection": "raporCapaian",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Rapor Capaian" }
+      ]
+    },
+    {
+      "collection": "jurnal",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Jurnal" },
+        { "name": "OwnerID", "type": "string", "required": false, "description": "ID Pemilik Dokumen Jurnal & Pelanggaran" },
+        { "name": "ownerId", "type": "string", "required": false, "description": "ID Pemilik Dokumen" }
+      ]
+    },
+    {
+      "collection": "kas",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Kas" }
+      ]
+    },
+    {
+      "collection": "kasLogs",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "ID Kas Log" }
+      ]
+    },
+    {
+      "collection": "settings",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "Settings key" }
+      ]
+    },
+    {
+      "collection": "school_settings",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "School settings ID" },
+        { "name": "nama_sekolah", "type": "string", "required": true, "description": "Nama Sekolah" }
+      ]
+    },
+    {
+      "collection": "holiday_config",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "Holiday config ID" },
+        { "name": "nama", "type": "string", "required": true, "description": "Nama Hari Libur" }
+      ]
+    },
+    {
+      "collection": "users",
+      "fields": [
+        { "name": "id", "type": "string", "required": true, "description": "User ID" }
+      ]
+    }
+  ]
+}

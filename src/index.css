@@ -1,0 +1,325 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-900: #0f172a;
+  --color-slate-800: #1e293b;
+  --color-slate-700: #334155;
+}
+
+body {
+  background-color: var(--color-slate-900);
+  color: #f8fafc;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(30, 41, 59, 0.5); 
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3); 
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.5); 
+}
+
+/* High Contrast Focus Highlight Enhancements for Active Fields */
+input:focus, 
+select:focus, 
+textarea:focus {
+  outline: none !important;
+  border-color: #6366f1 !important; /* Vivid Indigo Accent */
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.45) !important; /* High-visibility glowing focus ring */
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out !important;
+}
+
+html.light-mode input:focus, 
+html.light-mode select:focus, 
+html.light-mode textarea:focus {
+  border-color: #3730a3 !important; /* Deep Indigo for light background contrast */
+  box-shadow: 0 0 0 3.5px rgba(55, 48, 163, 0.4) !important;
+}
+
+/* ==========================================
+   LIGHT MODE HIGH CONTRAST THEME OVERRIDES
+   (Soft Eye-Friendly Neutral Slate Palette)
+   ========================================== */
+html.light-mode {
+  --color-slate-950: #ffffff;
+  --color-slate-900: #e2e8f0; /* Soft, glare-free neutral background */
+  --color-slate-800: #ffffff;
+  --color-slate-700: #cbd5e1;
+  --color-slate-600: #64748b;
+  --color-slate-500: #334155;
+  --color-slate-400: #1e293b; /* High contrast dark charcoal text for labels */
+  --color-slate-300: #0f172a; /* Deep charcoal text for body */
+  --color-slate-200: #020617; /* Near black text for titles */
+  --color-slate-100: #000000;
+  
+  --color-indigo-400: #312e81;
+  --color-indigo-300: #1e1b4b;
+  --color-indigo-200: #1e1b4b;
+
+  --color-emerald-400: #065f46;
+  --color-rose-400: #9f1239;
+  --color-amber-400: #92400e;
+
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+html.light-mode body {
+  background-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+/* Light mode cards & panels */
+html.light-mode aside {
+  background-color: #f8fafc !important;
+  border-right-color: #cbd5e1 !important;
+}
+
+html.light-mode header {
+  background-color: #f8fafc !important;
+  border-bottom-color: #cbd5e1 !important;
+}
+
+/* Page background in light mode */
+html.light-mode .bg-slate-950,
+html.light-mode .bg-slate-900 {
+  background-color: #e2e8f0 !important;
+}
+
+/* Card & container panels in light mode */
+html.light-mode .bg-slate-800,
+html.light-mode .bg-slate-800\/25,
+html.light-mode .bg-slate-800\/40,
+html.light-mode .bg-slate-800\/50,
+html.light-mode .bg-slate-800\/60,
+html.light-mode .bg-slate-800\/80 {
+  background-color: #ffffff !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Input & form fields in light mode */
+html.light-mode .bg-slate-900\/10,
+html.light-mode .bg-slate-900\/15,
+html.light-mode .bg-slate-900\/20,
+html.light-mode .bg-slate-900\/25,
+html.light-mode .bg-slate-900\/30,
+html.light-mode .bg-slate-900\/40,
+html.light-mode .bg-slate-900\/50,
+html.light-mode .bg-slate-900\/80 {
+  background-color: #f1f5f9 !important;
+}
+
+/* Light mode borders */
+html.light-mode .border-slate-800,
+html.light-mode .border-slate-700,
+html.light-mode .border-slate-800\/60,
+html.light-mode .border-slate-700\/30,
+html.light-mode .border-slate-700\/50,
+html.light-mode .border-slate-700\/60,
+html.light-mode .border-slate-700\/80 {
+  border-color: #94a3b8 !important;
+}
+
+/* High contrast text overrides for light mode */
+html.light-mode .text-slate-500 {
+  color: #334155 !important;
+}
+
+html.light-mode .text-slate-400 {
+  color: #1e293b !important; /* High contrast dark charcoal for secondary labels */
+}
+
+html.light-mode .text-slate-300,
+html.light-mode .text-slate-200,
+html.light-mode .text-slate-100 {
+  color: #0f172a !important; /* Near black for primary text */
+}
+
+html.light-mode .text-indigo-400,
+html.light-mode .text-indigo-300 {
+  color: #312e81 !important; /* Deep indigo for supreme contrast */
+}
+
+html.light-mode .text-emerald-400,
+html.light-mode .text-emerald-300 {
+  color: #065f46 !important; /* Dark emerald */
+}
+
+html.light-mode .text-rose-400,
+html.light-mode .text-rose-300 {
+  color: #9f1239 !important; /* Dark rose */
+}
+
+html.light-mode .text-amber-400,
+html.light-mode .text-amber-300 {
+  color: #92400e !important; /* Dark amber */
+}
+
+/* Inputs, selects, textareas & placeholders in light mode */
+html.light-mode input,
+html.light-mode select,
+html.light-mode textarea {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #64748b !important; /* Clearly defined contrast border */
+}
+
+html.light-mode input::placeholder,
+html.light-mode textarea::placeholder {
+  color: #475569 !important; /* Readable dark placeholder */
+}
+
+html.light-mode label {
+  color: #0f172a !important;
+  font-weight: 600 !important;
+}
+
+html.light-mode option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Active navigation items in sidebar */
+html.light-mode .bg-indigo-500\/20 {
+  background-color: #c7d2fe !important;
+  color: #1e1b4b !important;
+  border-color: #818cf8 !important;
+}
+
+/* Badge backgrounds in light mode */
+html.light-mode .bg-emerald-500\/20,
+html.light-mode .bg-emerald-500\/10 {
+  background-color: #a7f3d0 !important;
+  color: #064e3b !important;
+}
+
+html.light-mode .bg-rose-500\/20,
+html.light-mode .bg-rose-500\/10 {
+  background-color: #fecdd3 !important;
+  color: #881337 !important;
+}
+
+html.light-mode .bg-amber-500\/20,
+html.light-mode .bg-amber-500\/10 {
+  background-color: #fde68a !important;
+  color: #78350f !important;
+}
+
+/* Tables in light mode */
+html.light-mode table th {
+  background-color: #cbd5e1 !important;
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+html.light-mode table td {
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html.light-mode table tr:hover {
+  background-color: #f1f5f9 !important;
+}
+
+/* ==========================================
+   PRINT MEDIA STYLESHEET
+   (Hides sidebar, header, navigation, and controls for clean printing)
+   ========================================== */
+@media print {
+  /* Hide sidebar, top header, navs, floating modals, toasts, and buttons */
+  aside,
+  header,
+  nav,
+  .no-print,
+  .toast-container,
+  #toast-container,
+  button:not(.print-include) {
+    display: none !important;
+  }
+
+  /* Reset layout constraints for paper print */
+  body.has-qr-modal-open > *:not(#qr-modal-portal) {
+    display: none !important;
+  }
+  body.has-qr-modal-open #qr-modal-portal {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    height: auto !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  body, html {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  main, .main-content, #root {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  /* Force dark cards to print with clean light background & sharp border */
+  .bg-slate-900,
+  .bg-slate-950,
+  .bg-slate-800,
+  .bg-slate-800\/40,
+  .bg-slate-800\/50,
+  .bg-slate-800\/80,
+  .bg-slate-900\/40,
+  .bg-slate-900\/60,
+  .bg-slate-900\/80 {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+  }
+
+  /* Force dark text to print crisp black */
+  .text-slate-100,
+  .text-slate-200,
+  .text-slate-300,
+  .text-slate-400,
+  .text-slate-500 {
+    color: #0f172a !important;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+  }
+
+  .print-break-inside-avoid {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  a[href]:after {
+    content: none !important;
+  }
+}
+

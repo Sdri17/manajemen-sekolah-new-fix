@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function checking authentication
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Helper: Checks if document is owned by current user (by ownerId or OwnerID),
+    // OR if document has no ownerId field (shared data),
+    // OR if request is unauthenticated (local app session mode)
+    function canAccessDoc() {
+      return request.auth == null || 
+        resource == null ||
+        (!('ownerId' in resource.data) && !('OwnerID' in resource.data)) ||
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.OwnerID == request.auth.uid;
+    }
+
+    function canWriteDoc() {
+      return request.auth == null ||
+        (!('ownerId' in request.resource.data) && !('OwnerID' in request.resource.data)) ||
+        request.resource.data.ownerId == request.auth.uid ||
+        request.resource.data.OwnerID == request.auth.uid;
+    }
+
+    // Task, Journal, and Violation collections with row-level security
+    match /tasks/{taskId} {
+      allow read: if canAccessDoc();
+      allow create, update: if canWriteDoc();
+      allow delete: if canAccessDoc();
+    }
+
+    match /jurnal/{jurnalId} {
+      allow read: if canAccessDoc();
+      allow create, update: if canWriteDoc();
+      allow delete: if canAccessDoc();
+    }
+
+    match /violations/{violationId} {
+      allow read: if canAccessDoc();
+      allow create, update: if canWriteDoc();
+      allow delete: if canAccessDoc();
+    }
+
+    // Global School Settings and Holiday Configuration collections
+    match /school_settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    match /holiday_config/{holidayId} {
+      allow read, write: if true;
+    }
+
+    // Catch-all rule for students and all other document collections (including tenant/partition collections)
+    match /{collectionName}/{docId} {
+      allow read: if canAccessDoc();
+      allow create, update: if canWriteDoc();
+      allow delete: if canAccessDoc();
+    }
+  }
+}

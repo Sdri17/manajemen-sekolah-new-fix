@@ -1,0 +1,10 @@
+{
+  "name": "Remix Pengeloaan Kelas oleh wali kelas dengan firestore",
+  "description": "",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

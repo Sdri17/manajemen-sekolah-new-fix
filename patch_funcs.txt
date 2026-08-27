@@ -1,0 +1,29 @@
+  const handleSaveUrutan = async () => {
+    if (!settings || !setSettings) return;
+    const newSettings = { ...settings, urutan_mata_pelajaran_rapor: urutanMapel };
+    setSettings(newSettings);
+    try {
+      await store.settings.setItem('app_settings', newSettings);
+      toast.success('Urutan mata pelajaran rapor berhasil disimpan!');
+    } catch (e) {
+      toast.error('Gagal menyimpan urutan');
+    }
+  };
+
+  const moveUp = (index: number) => {
+    if (index === 0) return;
+    const newArr = [...urutanMapel];
+    const temp = newArr[index - 1];
+    newArr[index - 1] = newArr[index];
+    newArr[index] = temp;
+    setUrutanMapel(newArr);
+  };
+
+  const moveDown = (index: number) => {
+    if (index === urutanMapel.length - 1) return;
+    const newArr = [...urutanMapel];
+    const temp = newArr[index + 1];
+    newArr[index + 1] = newArr[index];
+    newArr[index] = temp;
+    setUrutanMapel(newArr);
+  };
