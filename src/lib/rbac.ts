@@ -223,6 +223,14 @@ export function canModifyData(
 }
 
 /**
+ * Helper untuk normalisasi nama kelas (misal "7-A" -> "7a", "7 A" -> "7a")
+ */
+function normalizeClass(name?: string): string {
+  if (!name) return '';
+  return name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+/**
  * Filter array data Siswa berdasarkan hak akses kelas user
  */
 export function filterStudentsForUser<T extends { kelas?: string }>(
@@ -234,11 +242,18 @@ export function filterStudentsForUser<T extends { kelas?: string }>(
   const assigned = getAssignedClasses(target);
   if (assigned.includes('*')) return students;
 
+  const isWaliKelas = target.role === 'wali_kelas';
+
   return students.filter(s => {
     if (!s.kelas || s.kelas.trim() === '' || s.kelas.trim() === '-' || s.kelas.trim().toLowerCase() === 'umum') {
-      return true; // Keep unassigned/imported students visible so user can assign them
+      // Untuk wali kelas, jangan tampilkan siswa tanpa kelas di dashboard rombelnya
+      return !isWaliKelas;
     }
-    return assigned.some(c => c.toLowerCase() === s.kelas?.trim().toLowerCase());
+    const cleanStudentClass = normalizeClass(s.kelas);
+    return assigned.some(c => {
+      const cleanAssigned = normalizeClass(c);
+      return cleanAssigned === cleanStudentClass || c.toLowerCase() === s.kelas?.trim().toLowerCase();
+    });
   });
 }
 
@@ -263,7 +278,8 @@ export function filterRecordsForUser<T extends { kelas?: string; mata_pelajaran?
     let classOk = true;
     if (!assignedClasses.includes('*')) {
       if (recordKelas) {
-        classOk = assignedClasses.some(c => c.toLowerCase() === recordKelas.trim().toLowerCase());
+        const cleanRecord = normalizeClass(recordKelas);
+        classOk = assignedClasses.some(c => normalizeClass(c) === cleanRecord || c.toLowerCase() === recordKelas.trim().toLowerCase());
       } else {
         classOk = false;
       }

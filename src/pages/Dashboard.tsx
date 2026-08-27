@@ -456,8 +456,11 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
       ]);
 
       const currentUser = getCurrentUser();
+      const isWaliKelasUser = currentUser?.role === 'wali_kelas' || role === 'wali_kelas';
       const assignedClasses = getAssignedClasses(currentUser);
-      const isRestrictedClass = !assignedClasses.includes('*');
+      const isRestrictedClass = isWaliKelasUser || (!assignedClasses.includes('*') && assignedClasses.length > 0);
+
+      const normClass = (str?: string) => (str || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
 
       // Student class mapping for accurate record filtering
       const studentClassMap: Record<string, string> = {};
@@ -478,9 +481,14 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
       setAllAttendance(userFilteredAttendance);
 
       const uniqueClassesAll = Array.from(new Set(sList.map(s => s.kelas).filter(Boolean)));
-      const uniqueClasses = isRestrictedClass
-        ? uniqueClassesAll.filter(c => assignedClasses.some(a => a.toLowerCase() === c.trim().toLowerCase()))
+      let uniqueClasses = isRestrictedClass
+        ? uniqueClassesAll.filter(c => assignedClasses.some(a => normClass(a) === normClass(c) || a.toLowerCase() === c.trim().toLowerCase()))
         : uniqueClassesAll;
+
+      if (isWaliKelasUser && uniqueClasses.length === 0 && assignedClasses.length > 0 && !assignedClasses.includes('*')) {
+        uniqueClasses = assignedClasses;
+      }
+
       setAvailableClasses(uniqueClasses);
 
       if (isRestrictedClass && uniqueClasses.length > 0 && (filterKelas === 'Semua' || !uniqueClasses.includes(filterKelas))) {
@@ -494,9 +502,15 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
 
       let filteredStudents = userFilteredStudents;
       if (filterKelas === 'Semua') {
-        filteredStudents = userFilteredStudents.filter(s => !s.kelas || s.kelas.toLowerCase() !== 'alumni');
+        if (isRestrictedClass) {
+          filteredStudents = userFilteredStudents.filter(s => 
+            s.kelas && assignedClasses.some(ac => normClass(ac) === normClass(s.kelas))
+          );
+        } else {
+          filteredStudents = userFilteredStudents.filter(s => !s.kelas || s.kelas.toLowerCase() !== 'alumni');
+        }
       } else {
-        filteredStudents = userFilteredStudents.filter(s => s.kelas && s.kelas.trim().toLowerCase() === filterKelas.trim().toLowerCase());
+        filteredStudents = userFilteredStudents.filter(s => s.kelas && normClass(s.kelas) === normClass(filterKelas));
       }
 
       // Filter Kas entries strictly by selected class or assigned class
@@ -1225,8 +1239,10 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
             onChange={e => setFilterKelas(e.target.value)}
             className="px-4 py-2 bg-slate-900/60 border border-slate-700/60 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 text-slate-200 transition-all cursor-pointer hover:bg-slate-900"
           >
-            <option value="Semua">Semua Kelas</option>
-            {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
+            {!(role === 'wali_kelas' || getCurrentUser()?.role === 'wali_kelas' || isRestrictedClass) && (
+              <option value="Semua">Semua Kelas</option>
+            )}
+            {availableClasses.map(c => <option key={c} value={c}>{c.toLowerCase().startsWith('kelas') ? c : `Kelas ${c}`}</option>)}
           </select>
 
           <div className="flex items-center gap-2">
@@ -2680,12 +2696,28 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
         </div>
       </div>
 
-      {/* USER MANAGEMENT SECTION (For Kepsek / Admin / Guru) */}
-      <div className="pt-2">
-        <Suspense fallback={<CardGridSkeleton />}>
-          <UserManagement role={role} />
-        </Suspense>
-      </div>
+      {/* USER MANAGEMENT SECTION (KHUSUS ROLE ADMIN SAJA) */}
+      {(role === 'admin' || getCurrentUser()?.role === 'admin' || getCurrentUser()?.username === 'admin') && (
+        <div className="pt-2 border-t border-slate-800/60 mt-6">
+          <div className="mb-3 px-1 flex items-center justify-between">
+            <div>
+              <h3 className="text-md font-bold text-slate-100 flex items-center gap-2">
+                <Users className="text-indigo-400" size={18} />
+                Manajemen Pengguna & Hak Akses (Dashboard Admin)
+              </h3>
+              <p className="text-xs text-slate-400">
+                Menu khusus administrator untuk mengelola akun pengguna, hak akses RBAC, dan pemulihan izin.
+              </p>
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 tracking-wider">
+              Khusus Admin
+            </span>
+          </div>
+          <Suspense fallback={<CardGridSkeleton />}>
+            <UserManagement role={role} />
+          </Suspense>
+        </div>
+      )}
 
       {showPullConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
