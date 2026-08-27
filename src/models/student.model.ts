@@ -47,9 +47,23 @@ export function normalizeStudentHelper(s: any): Student {
   const nama = getValue(['nama', 'nama_lengkap', 'nama_siswa']) || s.nama;
   const nisn = getValue(['nisn', 'nisn_siswa', 'nomor_induk_siswa_nasional', 'nomor_induk', 'ni', 'no_nisn', 'nomor_nisn', 'no_induk_nasional', 'nomor_induk_nasional']) || s.nisn;
   const nipd = getValue(['nipd', 'nipd_siswa']) || s.nipd;
+  let rawKelas = getValue(['kelas', 'nama_kelas', 'rombel', 'ruang', 'rombongan_belajar', 'kelas_siswa', 'kelas_tingkat', 'tingkat']) || s.kelas;
+  let rawTglLahir = getValue(['tanggal_lahir', 'tgl_lahir']) || s.tanggal_lahir;
+
+  // Handle misaligned Excel import where date of birth is parsed into kelas column
+  if (rawKelas && typeof rawKelas === 'string') {
+    const isDatePattern = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(rawKelas.trim()) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(rawKelas.trim());
+    if (isDatePattern) {
+      if (!rawTglLahir) {
+        rawTglLahir = rawKelas.trim();
+      }
+      rawKelas = s._defaultKelas || '';
+    }
+  }
+
   const tempat_lahir = getValue(['tempat_lahir', 'tempat', 'tpt_lahir']) || s.tempat_lahir;
-  const tanggal_lahir = getValue(['tanggal_lahir', 'tgl_lahir']) || s.tanggal_lahir;
-  const kelas = getValue(['kelas', 'nama_kelas', 'rombel', 'ruang', 'rombongan_belajar', 'kelas_siswa', 'kelas_tingkat', 'tingkat']) || s.kelas;
+  const tanggal_lahir = rawTglLahir;
+  const kelas = rawKelas;
   const nama_ayah = getValue(['nama_ayah', 'ayah']) || s.nama_ayah;
   const nama_ibu = getValue(['nama_ibu', 'ibu']) || s.nama_ibu;
   const no_telp_ortu = getValue(['no_telp_ortu', 'nomor_telepon', 'no_telp', 'nomor_hp', 'no_hp', 'telp', 'telepon', 'hp']) || s.no_telp_ortu;
@@ -77,9 +91,40 @@ export function normalizeStudentHelper(s: any): Student {
     }
   }
 
-  const cleanNisn = nisn ? String(nisn).trim() : '';
-  const cleanId = id ? String(id).trim() : '';
-  const primaryId = (cleanNisn && cleanNisn !== '-') ? cleanNisn : (cleanId || uuidv4());
+  const isInvalidIdStr = (val?: any) => {
+    if (!val) return true;
+    const str = String(val).trim().toLowerCase();
+    return (
+      !str || 
+      str === '-' || 
+      str === '0' || 
+      str === '0000000000' || 
+      str === 'undefined' || 
+      str === 'null' || 
+      str === '[object object]' || 
+      str === 'none' ||
+      str === 'siswa'
+    );
+  };
+
+  const cleanNisn = nisn && !isInvalidIdStr(nisn) ? String(nisn).trim() : '';
+  const cleanId = id && !isInvalidIdStr(id) ? String(id).trim() : '';
+
+  let primaryId = s.id && !isInvalidIdStr(s.id) ? String(s.id).trim() : '';
+  if (!primaryId && cleanId) {
+    primaryId = cleanId;
+  }
+  if (!primaryId && cleanNisn) {
+    primaryId = cleanNisn;
+  }
+  if (!primaryId) {
+    if (s._tempId) {
+      primaryId = s._tempId;
+    } else {
+      primaryId = uuidv4();
+      try { s._tempId = primaryId; } catch (e) {}
+    }
+  }
 
   student.id = primaryId;
   student.no = parseInt(no) || 0;

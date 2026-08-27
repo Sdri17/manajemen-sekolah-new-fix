@@ -46,17 +46,136 @@ export const resumeSyncQueue = () => {
   isSyncQueuePaused = false;
 };
 
+// Global config for localforage driver order
+try {
+  localforage.config({
+    name: 'ClassApp',
+    driver: [localforage.INDEXEDDB, localforage.LOCALSTORAGE]
+  });
+} catch (e) {}
+
+// Fallback in-memory storage + localStorage wrapper when IndexedDB fails or driver dbInfo is null
+const memoryCache: Record<string, Map<string, any>> = {};
+
+function getMemoryStore(storeName: string): Map<string, any> {
+  if (!memoryCache[storeName]) {
+    memoryCache[storeName] = new Map();
+  }
+  return memoryCache[storeName];
+}
+
+function fallbackGetItem(storeName: string, key: string): any {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const lsKey = `ClassApp_${storeName}_${key}`;
+      const raw = localStorage.getItem(lsKey);
+      if (raw !== null) {
+        return JSON.parse(raw);
+      }
+    }
+  } catch (e) {}
+  return getMemoryStore(storeName).get(key) ?? null;
+}
+
+function fallbackSetItem(storeName: string, key: string, value: any): void {
+  getMemoryStore(storeName).set(key, value);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const lsKey = `ClassApp_${storeName}_${key}`;
+      localStorage.setItem(lsKey, JSON.stringify(value));
+    }
+  } catch (e) {}
+}
+
+function fallbackRemoveItem(storeName: string, key: string): void {
+  getMemoryStore(storeName).delete(key);
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const lsKey = `ClassApp_${storeName}_${key}`;
+      localStorage.removeItem(lsKey);
+    }
+  } catch (e) {}
+}
+
+function fallbackClear(storeName: string): void {
+  getMemoryStore(storeName).clear();
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const prefix = `ClassApp_${storeName}_`;
+      const toRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) {
+          toRemove.push(k);
+        }
+      }
+      toRemove.forEach(k => localStorage.removeItem(k));
+    }
+  } catch (e) {}
+}
+
+function fallbackKeys(storeName: string): string[] {
+  const keysSet = new Set<string>(getMemoryStore(storeName).keys());
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const prefix = `ClassApp_${storeName}_`;
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) {
+          keysSet.add(k.substring(prefix.length));
+        }
+      }
+    }
+  } catch (e) {}
+  return Array.from(keysSet);
+}
+
+let forceLocalStorage = false;
 const instances: Record<string, LocalForage> = {};
 
 export function getStoreInstance(storeName: string): LocalForage {
-  if (!instances[storeName]) {
-    instances[storeName] = localforage.createInstance({ name: 'ClassApp', storeName });
+  if (!instances[storeName] || (instances[storeName] as any)?._dbInfo === null) {
+    try {
+      if (forceLocalStorage) {
+        instances[storeName] = localforage.createInstance({
+          name: 'ClassApp',
+          storeName,
+          driver: localforage.LOCALSTORAGE
+        });
+      } else {
+        instances[storeName] = localforage.createInstance({
+          name: 'ClassApp',
+          storeName,
+          driver: [localforage.INDEXEDDB, localforage.LOCALSTORAGE]
+        });
+      }
+    } catch (e) {
+      forceLocalStorage = true;
+      instances[storeName] = localforage.createInstance({
+        name: 'ClassApp',
+        storeName,
+        driver: localforage.LOCALSTORAGE
+      });
+    }
   }
   return instances[storeName];
 }
 
 export function recreateStoreInstance(storeName: string): LocalForage {
-  instances[storeName] = localforage.createInstance({ name: 'ClassApp', storeName });
+  forceLocalStorage = true;
+  try {
+    instances[storeName] = localforage.createInstance({
+      name: 'ClassApp',
+      storeName,
+      driver: localforage.LOCALSTORAGE
+    });
+  } catch (e) {
+    instances[storeName] = localforage.createInstance({
+      name: `ClassApp_${Date.now()}`,
+      storeName,
+      driver: localforage.LOCALSTORAGE
+    });
+  }
   return instances[storeName];
 }
 
@@ -66,21 +185,25 @@ export function resetStoreInstances() {
   }
 }
 
-async function safeExec<T>(storeName: string, fn: (inst: LocalForage) => Promise<T>, fallback: T): Promise<T> {
+async function safeExec<T>(
+  storeName: string,
+  fn: (inst: LocalForage) => Promise<T>,
+  fallbackFn: () => T | Promise<T>
+): Promise<T> {
   try {
     const inst = getStoreInstance(storeName);
     return await fn(inst);
   } catch (err: any) {
-    console.warn(`[localforage] Error on store '${storeName}', recreating instance:`, err);
+    console.warn(`[localforage] Store '${storeName}' operational error, switching to LOCALSTORAGE fallback:`, err?.message || err);
     try {
       const freshInst = recreateStoreInstance(storeName);
       if (typeof freshInst.ready === 'function') {
         await freshInst.ready().catch(() => {});
       }
       return await fn(freshInst);
-    } catch (retryErr) {
-      console.error(`[localforage] Retry failed on store '${storeName}':`, retryErr);
-      return fallback;
+    } catch (retryErr: any) {
+      console.warn(`[localforage] Fallback engaged for store '${storeName}':`, retryErr?.message || retryErr);
+      return await fallbackFn();
     }
   }
 }
@@ -94,186 +217,289 @@ const wrapInstance = (storeName: string) => {
   };
   return {
     getItem: async (key: string) => {
-      return safeExec(storeName, async (inst) => {
-        const val = await inst.getItem(key);
-        if (storeName === 'students' && val) {
-          return normalizeStudentHelper(val);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          let val = await inst.getItem(key);
+          if (val === null || val === undefined) {
+            val = fallbackGetItem(storeName, key);
+          }
+          if (storeName === 'students' && val) {
+            return normalizeStudentHelper(val);
+          }
+          return val;
+        },
+        async () => {
+          let val = fallbackGetItem(storeName, key);
+          if (storeName === 'students' && val) {
+            return normalizeStudentHelper(val);
+          }
+          return val;
         }
-        return val;
-      }, null);
+      );
     },
     setItem: async <T>(key: string, value: T) => {
-      return safeExec(storeName, async (inst) => {
-        const previousVal = await inst.getItem(key).catch(() => null);
-        let valToSet = value;
-        if (storeName === 'students' && value) {
-          valToSet = normalizeStudentHelper(value) as any;
+      let valToSet = value;
+      if (storeName === 'students' && value) {
+        valToSet = normalizeStudentHelper(value) as any;
+      }
+      if (valToSet && typeof valToSet === 'object' && !Array.isArray(valToSet)) {
+        const nowIso = new Date().toISOString();
+        const obj = valToSet as any;
+        if (!obj.lastModified) {
+          obj.lastModified = nowIso;
         }
-        if (valToSet && typeof valToSet === 'object' && !Array.isArray(valToSet)) {
-          const nowIso = new Date().toISOString();
-          const obj = valToSet as any;
-          if (!obj.lastModified) {
-            obj.lastModified = nowIso;
-          }
-          if (!obj.updatedAt) {
-            obj.updatedAt = obj.lastModified;
-          }
+        if (!obj.updatedAt) {
+          obj.updatedAt = obj.lastModified;
         }
-        if (['tasks', 'jurnal'].includes(storeName) && valToSet && typeof valToSet === 'object') {
-          const obj = valToSet as any;
-          if (!obj.OwnerID && !obj.ownerId) {
-            const currentUserId = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_id') : null) || 'system';
-            obj.OwnerID = currentUserId;
-            obj.ownerId = currentUserId;
-          } else {
-            if (!obj.OwnerID) obj.OwnerID = obj.ownerId;
-            if (!obj.ownerId) obj.ownerId = obj.OwnerID;
-          }
+      }
+      if (['tasks', 'jurnal'].includes(storeName) && valToSet && typeof valToSet === 'object') {
+        const obj = valToSet as any;
+        if (!obj.OwnerID && !obj.ownerId) {
+          const currentUserId = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_id') : null) || 'system';
+          obj.OwnerID = currentUserId;
+          obj.ownerId = currentUserId;
+        } else {
+          if (!obj.OwnerID) obj.OwnerID = obj.ownerId;
+          if (!obj.ownerId) obj.ownerId = obj.OwnerID;
         }
-        const res = await inst.setItem(key, valToSet);
-        if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
-          await store.syncQueue.setItem(`${storeName}::${key}`, 'updated').catch(() => {});
-        }
-        if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
-          syncDocToFirebase(storeName, key, valToSet, previousVal).catch(() => {});
-          dispatchDeltaUpdate(storeName, key, 'upsert', valToSet);
-        }
-        if (!['auditLogs', 'syncQueue', 'syncLogs'].includes(storeName)) {
-          const isCreate = !previousVal;
-          const action = isCreate ? 'CREATE' : (storeName === 'settings' ? 'SETTINGS' : 'UPDATE');
-          const entityMap: Record<string, string> = {
-            students: 'Siswa',
-            grades: 'Nilai',
-            attendance: 'Absensi',
-            tasks: 'Tugas',
-            users: 'Pengguna',
-            jurnal: 'Jurnal Kelas',
-            kas: 'Kas Kelas',
-            settings: 'Pengaturan Sistem',
-            school_settings: 'Pengaturan Identitas Sekolah',
-            holiday_config: 'Konfigurasi Hari Libur',
-            roster: 'Roster Pelajaran',
-            piket: 'Jadwal Piket',
-            raporCapaian: 'Rapor Capaian'
-          };
-          const entityName = entityMap[storeName] || storeName;
-          const itemIdentifier = (valToSet as any)?.nama || (valToSet as any)?.judul || (valToSet as any)?.username || (valToSet as any)?.nama_sekolah || key;
-          const details = isCreate 
-            ? `Menambahkan ${entityName}: "${itemIdentifier}"` 
-            : `Memperbarui ${entityName}: "${itemIdentifier}"`;
+      }
 
-          logAuditEvent({
-            action,
-            entity: entityName,
-            entity_id: key,
-            details,
-            previous_value: previousVal,
-            new_value: valToSet
-          }).catch(() => {});
+      fallbackSetItem(storeName, key, valToSet);
+
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const previousVal = await inst.getItem(key).catch(() => fallbackGetItem(storeName, key));
+          const res = await inst.setItem(key, valToSet);
+          if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            await store.syncQueue.setItem(`${storeName}::${key}`, 'updated').catch(() => {});
+          }
+          if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            syncDocToFirebase(storeName, key, valToSet, previousVal).catch(() => {});
+            dispatchDeltaUpdate(storeName, key, 'upsert', valToSet);
+          }
+          if (!['auditLogs', 'syncQueue', 'syncLogs'].includes(storeName)) {
+            const isCreate = !previousVal;
+            const action = isCreate ? 'CREATE' : (storeName === 'settings' ? 'SETTINGS' : 'UPDATE');
+            const entityMap: Record<string, string> = {
+              students: 'Siswa',
+              grades: 'Nilai',
+              attendance: 'Absensi',
+              tasks: 'Tugas',
+              users: 'Pengguna',
+              jurnal: 'Jurnal Kelas',
+              kas: 'Kas Kelas',
+              settings: 'Pengaturan Sistem',
+              school_settings: 'Pengaturan Identitas Sekolah',
+              holiday_config: 'Konfigurasi Hari Libur',
+              roster: 'Roster Pelajaran',
+              piket: 'Jadwal Piket',
+              raporCapaian: 'Rapor Capaian'
+            };
+            const entityName = entityMap[storeName] || storeName;
+            const itemIdentifier = (valToSet as any)?.nama || (valToSet as any)?.judul || (valToSet as any)?.username || (valToSet as any)?.nama_sekolah || key;
+            const details = isCreate 
+              ? `Menambahkan ${entityName}: "${itemIdentifier}"` 
+              : `Memperbarui ${entityName}: "${itemIdentifier}"`;
+
+            logAuditEvent({
+              action,
+              entity: entityName,
+              entity_id: key,
+              details,
+              previous_value: previousVal,
+              new_value: valToSet
+            }).catch(() => {});
+          }
+          notify();
+          return res;
+        },
+        async () => {
+          if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            await store.syncQueue.setItem(`${storeName}::${key}`, 'updated').catch(() => {});
+          }
+          if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            syncDocToFirebase(storeName, key, valToSet, null).catch(() => {});
+            dispatchDeltaUpdate(storeName, key, 'upsert', valToSet);
+          }
+          notify();
+          return valToSet as any;
         }
-        notify();
-        return res;
-      }, value);
+      );
     },
     removeItem: async (key: string) => {
-      return safeExec(storeName, async (inst) => {
-        const previousVal = await inst.getItem(key).catch(() => null);
-        await inst.removeItem(key);
-        if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
-          await store.syncQueue.setItem(`${storeName}::${key}`, 'deleted').catch(() => {});
-        }
-        if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
-          deleteDocFromFirebase(storeName, key, previousVal).catch(() => {});
-          dispatchDeltaUpdate(storeName, key, 'delete');
-        }
-        if (!['auditLogs', 'syncQueue', 'syncLogs'].includes(storeName) && previousVal) {
-          const entityMap: Record<string, string> = {
-            students: 'Siswa',
-            grades: 'Nilai',
-            attendance: 'Absensi',
-            tasks: 'Tugas',
-            users: 'Pengguna',
-            jurnal: 'Jurnal Kelas',
-            kas: 'Kas Kelas',
-            settings: 'Pengaturan Sistem',
-            roster: 'Roster Pelajaran',
-            piket: 'Jadwal Piket',
-            raporCapaian: 'Rapor Capaian'
-          };
-          const entityName = entityMap[storeName] || storeName;
-          const itemIdentifier = (previousVal as any)?.nama || (previousVal as any)?.judul || (previousVal as any)?.username || key;
-          const details = `Menghapus ${entityName}: "${itemIdentifier}"`;
+      const previousVal = fallbackGetItem(storeName, key);
+      fallbackRemoveItem(storeName, key);
 
-          logAuditEvent({
-            action: 'DELETE',
-            entity: entityName,
-            entity_id: key,
-            details,
-            previous_value: previousVal,
-            new_value: null
-          }).catch(() => {});
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const pVal = await inst.getItem(key).catch(() => previousVal);
+          await inst.removeItem(key);
+          if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            await store.syncQueue.setItem(`${storeName}::${key}`, 'deleted').catch(() => {});
+          }
+          if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            deleteDocFromFirebase(storeName, key, pVal || previousVal).catch(() => {});
+            dispatchDeltaUpdate(storeName, key, 'delete');
+          }
+          if (!['auditLogs', 'syncQueue', 'syncLogs'].includes(storeName) && (pVal || previousVal)) {
+            const targetVal = pVal || previousVal;
+            const entityMap: Record<string, string> = {
+              students: 'Siswa',
+              grades: 'Nilai',
+              attendance: 'Absensi',
+              tasks: 'Tugas',
+              users: 'Pengguna',
+              jurnal: 'Jurnal Kelas',
+              kas: 'Kas Kelas',
+              settings: 'Pengaturan Sistem',
+              roster: 'Roster Pelajaran',
+              piket: 'Jadwal Piket',
+              raporCapaian: 'Rapor Capaian'
+            };
+            const entityName = entityMap[storeName] || storeName;
+            const itemIdentifier = (targetVal as any)?.nama || (targetVal as any)?.judul || (targetVal as any)?.username || key;
+            const details = `Menghapus ${entityName}: "${itemIdentifier}"`;
+
+            logAuditEvent({
+              action: 'DELETE',
+              entity: entityName,
+              entity_id: key,
+              details,
+              previous_value: targetVal,
+              new_value: null
+            }).catch(() => {});
+          }
+          notify();
+        },
+        async () => {
+          if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            await store.syncQueue.setItem(`${storeName}::${key}`, 'deleted').catch(() => {});
+          }
+          if (['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs', 'settings', 'school_settings', 'holiday_config'].includes(storeName)) {
+            deleteDocFromFirebase(storeName, key, previousVal).catch(() => {});
+            dispatchDeltaUpdate(storeName, key, 'delete');
+          }
+          notify();
         }
-        notify();
-      }, undefined);
+      );
     },
     clear: async () => {
-      return safeExec(storeName, async (inst) => {
-        const existingKeys: string[] = [];
-        try {
-          await inst.iterate((_, key) => {
-            if (key) existingKeys.push(key);
-          });
-        } catch (e) {}
-
-        await inst.clear();
-        if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs'].includes(storeName)) {
+      fallbackClear(storeName);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const existingKeys: string[] = [];
           try {
-            const keys = await store.syncQueue.keys();
-            for (const k of keys) {
-              if (k.startsWith(`${storeName}::`)) {
-                await store.syncQueue.removeItem(k);
-              }
-            }
-            for (const k of existingKeys) {
-              await store.syncQueue.setItem(`${storeName}::${k}`, 'deleted').catch(() => {});
-            }
+            await inst.iterate((_, key) => {
+              if (key) existingKeys.push(key);
+            });
           } catch (e) {}
+
+          await inst.clear();
+          if (!isSyncQueuePaused && ['students', 'grades', 'attendance', 'roster', 'piket', 'tasks', 'raporCapaian', 'users', 'jurnal', 'kas', 'kasLogs'].includes(storeName)) {
+            try {
+              const keys = await store.syncQueue.keys();
+              for (const k of keys) {
+                if (k.startsWith(`${storeName}::`)) {
+                  await store.syncQueue.removeItem(k);
+                }
+              }
+              for (const k of existingKeys) {
+                await store.syncQueue.setItem(`${storeName}::${k}`, 'deleted').catch(() => {});
+              }
+            } catch (e) {}
+          }
+          notify();
+        },
+        async () => {
+          notify();
         }
-        notify();
-      }, undefined);
+      );
     },
     iterate: async <T, U>(iterator: (value: T, key: string, iterationNumber: number) => U) => {
-      return safeExec(storeName, async (inst) => {
-        let itemCount = 0;
-        return inst.iterate<any, any>(async (value, key, iterationNumber) => {
-          let valToPass = value;
-          if (storeName === 'students' && value) {
-            valToPass = normalizeStudentHelper(value);
-          }
-          const res = iterator(valToPass, key, iterationNumber);
-          itemCount++;
-          if (itemCount % 500 === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
+      return safeExec(
+        storeName,
+        async (inst) => {
+          let itemCount = 0;
+          return inst.iterate<any, any>((value, key, iterationNumber) => {
+            let valToPass = value;
+            if (storeName === 'students' && value) {
+              valToPass = normalizeStudentHelper(value);
+            }
+            const res = iterator(valToPass, key, iterationNumber);
+            itemCount++;
+            if (res !== undefined && !(res instanceof Promise)) {
+              return res;
+            }
+            return undefined;
+          });
+        },
+        async () => {
+          const keys = fallbackKeys(storeName);
+          let res: any;
+          for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            let val = fallbackGetItem(storeName, key);
+            if (storeName === 'students' && val) {
+              val = normalizeStudentHelper(val);
+            }
+            res = iterator(val, key, i + 1);
+            if (res !== undefined && !(res instanceof Promise)) break;
           }
           return res;
-        });
-      }, undefined as any);
+        }
+      );
     },
     length: async () => {
-      return safeExec(storeName, async (inst) => inst.length(), 0);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const len = await inst.length();
+          return len > 0 ? len : fallbackKeys(storeName).length;
+        },
+        async () => fallbackKeys(storeName).length
+      );
     },
     key: async (n: number) => {
-      return safeExec(storeName, async (inst) => inst.key(n), null);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const k = await inst.key(n);
+          if (k !== null) return k;
+          const fk = fallbackKeys(storeName);
+          return fk[n] ?? null;
+        },
+        async () => {
+          const fk = fallbackKeys(storeName);
+          return fk[n] ?? null;
+        }
+      );
     },
     keys: async () => {
-      return safeExec(storeName, async (inst) => inst.keys(), [] as string[]);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          const instKeys = await inst.keys();
+          if (instKeys && instKeys.length > 0) return instKeys;
+          return fallbackKeys(storeName);
+        },
+        async () => fallbackKeys(storeName)
+      );
     },
     dropInstance: async (options?: any) => {
-      return safeExec(storeName, async (inst) => {
-        if (typeof inst.dropInstance === 'function') {
-          return inst.dropInstance(options);
-        }
-      }, undefined);
+      fallbackClear(storeName);
+      return safeExec(
+        storeName,
+        async (inst) => {
+          if (typeof inst.clear === 'function') {
+            await inst.clear().catch(() => {});
+          }
+        },
+        async () => {}
+      );
     },
   } as LocalForage;
 };
@@ -364,35 +590,31 @@ export const resetDatabase = async (preserveSettings: boolean = false) => {
     'settings'
   ];
 
-  // 1. Iterate through wrapped store instances in store object and execute clear() & remove all keys
-  for (const [key, storeInstance] of Object.entries(store)) {
-    if (preserveSettings && key === 'settings') continue;
+  // 1. Parallel high-speed clear of all IndexedDB store instances using native clear()
+  const clearPromises = Object.entries(store).map(async ([key, storeInstance]) => {
+    if (preserveSettings && key === 'settings') return;
     try {
-      if (storeInstance) {
-        if (typeof storeInstance.keys === 'function') {
-          const keys = await storeInstance.keys();
-          for (const k of keys) {
-            await storeInstance.removeItem(k).catch(() => {});
-          }
-        }
-        if (typeof storeInstance.clear === 'function') {
-          await storeInstance.clear().catch(() => {});
-        }
+      if (storeInstance && typeof storeInstance.clear === 'function') {
+        await storeInstance.clear().catch(() => {});
       }
     } catch (e) {
       console.warn(`Error clearing store ${key}:`, e);
     }
-  }
+  });
 
-  // 2. Clear & Drop raw LocalForage store instances for ClassApp database
-  for (const sName of storeNames) {
-    if (preserveSettings && sName === 'settings') continue;
+  // 2. Clear localforage fallback memory instances in parallel
+  const fallbackPromises = storeNames.map(async (sName) => {
+    if (preserveSettings && sName === 'settings') return;
     try {
-      const inst = localforage.createInstance({ name: 'ClassApp', storeName: sName });
-      await inst.clear().catch(() => {});
-      await inst.dropInstance().catch(() => {});
+      fallbackClear(sName);
+      const inst = getStoreInstance(sName);
+      if (inst && typeof inst.clear === 'function') {
+        await inst.clear().catch(() => {});
+      }
     } catch (e) {}
-  }
+  });
+
+  await Promise.all([...clearPromises, ...fallbackPromises]);
 
   // 3. Delete IndexedDB database ClassApp directly
   try {

@@ -9,6 +9,7 @@ import { getFirebaseStatus, pushAllLocalDataToFirebase, purgeAllFirebaseData, ve
 import UserManagement from '../components/UserManagement';
 import AdminManagementPanel from '../components/AdminManagementPanel';
 import { DatabaseMigrationModal } from '../components/DatabaseMigrationModal';
+import { parseAndNormalizeBackup } from '../lib/backupHelper';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -738,12 +739,13 @@ export default function Pengaturan({
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const json = JSON.parse(e.target?.result as string);
-        if (!json || (!json.students && !json.grades && !json.attendance && !json.settings && !json.tasks && !json.roster && !json.piket && !json.jurnal && !json.kas && !json.kasLogs && !json.raporCapaian && !json.users)) {
+        const rawJson = JSON.parse(e.target?.result as string);
+        const normalized = parseAndNormalizeBackup(rawJson);
+        if (!normalized) {
           throw new Error('Format file backup tidak valid. File harus mengandung setidaknya satu komponen data yang dikenali (siswa, nilai, absensi, kas, roster, piket, tugas, jurnal, rapor, pengguna, atau pengaturan).');
         }
 
-        setPendingImportJson(json);
+        setPendingImportJson(normalized);
         setShowImportConfirmModal(true);
       } catch (err: any) {
         toast.error('Gagal membaca file backup JSON: ' + err.message);
@@ -769,7 +771,9 @@ export default function Pengaturan({
         }
       };
 
-      if (json.students && Array.isArray(json.students)) {
+      let restoredSummary: string[] = [];
+
+      if (json.students && Array.isArray(json.students) && json.students.length > 0) {
         const validStudents = json.students.filter((s: any) => s && s.id);
         await batchProcess(validStudents, async (s: any) => {
           await Promise.all([
@@ -777,8 +781,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`students::${s.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validStudents.length} Siswa`);
       }
-      if (json.grades && Array.isArray(json.grades)) {
+      if (json.grades && Array.isArray(json.grades) && json.grades.length > 0) {
         const validGrades = json.grades.filter((g: any) => g && g.id);
         await batchProcess(validGrades, async (g: any) => {
           await Promise.all([
@@ -786,8 +791,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`grades::${g.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validGrades.length} Nilai`);
       }
-      if (json.attendance && Array.isArray(json.attendance)) {
+      if (json.attendance && Array.isArray(json.attendance) && json.attendance.length > 0) {
         const validAttendance = json.attendance.filter((a: any) => a && a.id);
         await batchProcess(validAttendance, async (a: any) => {
           await Promise.all([
@@ -795,8 +801,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`attendance::${a.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validAttendance.length} Absensi`);
       }
-      if (json.kas && Array.isArray(json.kas)) {
+      if (json.kas && Array.isArray(json.kas) && json.kas.length > 0) {
         const validKas = json.kas.filter((k: any) => k && k.id);
         await batchProcess(validKas, async (k: any) => {
           await Promise.all([
@@ -804,8 +811,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`kas::${k.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validKas.length} Transaksi Kas`);
       }
-      if (json.kasLogs && Array.isArray(json.kasLogs)) {
+      if (json.kasLogs && Array.isArray(json.kasLogs) && json.kasLogs.length > 0) {
         const validKasLogs = json.kasLogs.filter((kl: any) => kl && kl.id);
         await batchProcess(validKasLogs, async (kl: any) => {
           await Promise.all([
@@ -814,7 +822,7 @@ export default function Pengaturan({
           ]);
         });
       }
-      if (json.roster && Array.isArray(json.roster)) {
+      if (json.roster && Array.isArray(json.roster) && json.roster.length > 0) {
         const validRoster = json.roster.filter((r: any) => r && r.id);
         await batchProcess(validRoster, async (r: any) => {
           await Promise.all([
@@ -822,8 +830,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`roster::${r.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validRoster.length} Jadwal Roster`);
       }
-      if (json.piket && Array.isArray(json.piket)) {
+      if (json.piket && Array.isArray(json.piket) && json.piket.length > 0) {
         const validPiket = json.piket.filter((p: any) => p && p.id);
         await batchProcess(validPiket, async (p: any) => {
           await Promise.all([
@@ -831,8 +840,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`piket::${p.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validPiket.length} Piket`);
       }
-      if (json.tasks && Array.isArray(json.tasks)) {
+      if (json.tasks && Array.isArray(json.tasks) && json.tasks.length > 0) {
         const validTasks = json.tasks.filter((t: any) => t && t.id);
         await batchProcess(validTasks, async (t: any) => {
           await Promise.all([
@@ -840,8 +850,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`tasks::${t.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validTasks.length} Tugas`);
       }
-      if (json.jurnal && Array.isArray(json.jurnal)) {
+      if (json.jurnal && Array.isArray(json.jurnal) && json.jurnal.length > 0) {
         const validJurnal = json.jurnal.filter((j: any) => j && j.id);
         await batchProcess(validJurnal, async (j: any) => {
           await Promise.all([
@@ -849,8 +860,9 @@ export default function Pengaturan({
             store.syncQueue.setItem(`jurnal::${j.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validJurnal.length} Catatan Jurnal`);
       }
-      if (json.raporCapaian && Array.isArray(json.raporCapaian)) {
+      if (json.raporCapaian && Array.isArray(json.raporCapaian) && json.raporCapaian.length > 0) {
         const validCapaian = json.raporCapaian.filter((c: any) => c && c.id);
         await batchProcess(validCapaian, async (c: any) => {
           await Promise.all([
@@ -858,6 +870,7 @@ export default function Pengaturan({
             store.syncQueue.setItem(`raporCapaian::${c.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validCapaian.length} Rapor Capaian`);
       }
       if (json.settings) {
         const current = await store.settings.getItem<SettingsType>('app_settings') || {} as SettingsType;
@@ -872,8 +885,9 @@ export default function Pengaturan({
         await store.settings.setItem('app_settings', merged);
         setFormData(merged);
         setSettings(merged);
+        restoredSummary.push('Pengaturan Aplikasi');
       }
-      if (json.users && Array.isArray(json.users)) {
+      if (json.users && Array.isArray(json.users) && json.users.length > 0) {
         const validUsers = json.users.filter((u: any) => u && u.id && u.username !== 'admin');
         await batchProcess(validUsers, async (u: any) => {
           await Promise.all([
@@ -881,6 +895,7 @@ export default function Pengaturan({
             store.syncQueue.setItem(`users::${u.id}`, 'updated')
           ]);
         });
+        restoredSummary.push(`${validUsers.length} Pengguna System`);
       }
 
       toast.success('Pencadangan data master berhasil dipulihkan! Menghubungkan & menyinkronkan data ke Cloud Firebase...');
@@ -899,7 +914,8 @@ export default function Pengaturan({
       setPendingImportJson(null);
       
       window.dispatchEvent(new Event('data-changed'));
-      toast.success('Data berhasil dipulihkan!');
+      const summaryText = restoredSummary.length > 0 ? restoredSummary.join(', ') : 'Data';
+      toast.success(`Berhasil pemulihan data: ${summaryText}!`);
 
     } catch (err: any) {
       toast.error('Gagal mengimpor file backup: ' + err.message);

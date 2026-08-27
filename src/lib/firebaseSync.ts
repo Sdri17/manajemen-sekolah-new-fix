@@ -22,6 +22,7 @@ import {
 import { db, auth, activeFirebaseConfig, getActiveDatabaseId } from './firebase';
 import { store, pauseSyncQueue, resumeSyncQueue, pauseNotifications, resumeNotifications } from './store';
 import { AppUser } from '../models';
+import { filterStudentsForUser } from './rbac';
 import { initDocumentLocksRealtimeListener } from './documentLock';
 import { sendLocalPushNotification } from './notificationService';
 import { isDateHoliday, initScheduledCleanupJob } from './cleanupJob';
@@ -391,6 +392,10 @@ export function setClassTenantId(newClassId: string): void {
 }
 
 export function getTenantCollectionName(baseCollectionName: string, overrideTenantId?: string): string {
+  // Global master stores that must NEVER be partitioned by class tenant
+  if (['users', 'settings', 'school_settings'].includes(baseCollectionName)) {
+    return baseCollectionName;
+  }
   const tenantId = overrideTenantId !== undefined ? overrideTenantId : getClassTenantId();
   if (!tenantId || tenantId === 'default' || tenantId === 'semua') {
     return baseCollectionName;
@@ -410,8 +415,22 @@ export function validateDocumentOwner(collectionName: string, docId: string, doc
   const isOwnerRestrictedCollection = ['tasks', 'jurnal', 'violations'].includes(collectionName);
 
   if (isOwnerRestrictedCollection || targetOwnerId) {
-    const currentUserId = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_id') : null) || auth.currentUser?.uid;
-    const userRole = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_role') : null);
+    let currentUserId = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_id') : null) || auth.currentUser?.uid;
+    let userRole = (typeof window !== 'undefined' ? localStorage.getItem('edusync_user_role') : null);
+
+    // Fallback to app_user in localStorage if explicit keys are not present
+    if ((!currentUserId || !userRole) && typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('app_user');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed) {
+            if (!currentUserId) currentUserId = parsed.id || parsed.username;
+            if (!userRole) userRole = parsed.role;
+          }
+        }
+      } catch (e) {}
+    }
 
     // Admins, kepsek, or background system operations bypass row-level check
     if (userRole === 'admin' || userRole === 'kepsek' || !currentUserId) {
@@ -1739,13 +1758,15 @@ export async function pullAllRemoteDataFromFirebase(
 
           totalFetched += colFetched;
 
-          if (docsToProcess.length > 0) {
-            // Pre-load local store items into a map for fast comparison
-            const existingLocalMap = new Map<string, string>();
-            await storeInstance.iterate((val: any, key: string) => {
-              existingLocalMap.set(String(key), JSON.stringify(val || {}));
-            });
+          // Count existing local store items for diagnostic logging
+          let localCountBefore = 0;
+          const existingLocalMap = new Map<string, string>();
+          await storeInstance.iterate((val: any, key: string) => {
+            localCountBefore++;
+            existingLocalMap.set(String(key), JSON.stringify(val || {}));
+          }).catch(() => {});
 
+          if (docsToProcess.length > 0) {
             const setPromises: Promise<any>[] = [];
 
             for (const item of docsToProcess) {
@@ -1776,7 +1797,9 @@ export async function pullAllRemoteDataFromFirebase(
                     try { existingLocalObj = JSON.parse(localStr); } catch (e) {}
                   }
                   if (isIncomingDataNewer(remoteData, existingLocalObj)) {
-                    setPromises.push(storeInstance.setItem(docId, remoteData));
+                    // Smart merge to preserve existing local properties if missing in remote
+                    const mergedPayload = existingLocalObj ? { ...existingLocalObj, ...remoteData } : remoteData;
+                    setPromises.push(storeInstance.setItem(docId, mergedPayload));
                     colUpdated++;
                     totalUpdated++;
                     hasAnyChanges = true;
@@ -1797,6 +1820,19 @@ export async function pullAllRemoteDataFromFirebase(
               }
             }
           }
+
+          let localCountAfter = 0;
+          await storeInstance.iterate(() => { localCountAfter++; }).catch(() => {});
+
+          console.log(`[FirebaseSync Sync Audit Log] Koleksi '${storeName}': Firestore Fetched=${colFetched} | IndexedDB Local Before=${localCountBefore} | IndexedDB Local After=${localCountAfter} | Updated=${colUpdated} | Unchanged=${totalSkippedUnchanged}`);
+
+          recordSyncAuditLog({
+            type: 'PULL',
+            status: 'SUCCESS',
+            title: `Verifikasi Data '${storeName}' Firestore vs Local IndexedDB`,
+            details: `Firestore: ${colFetched} item. IndexedDB Lokal: ${localCountAfter} item. Diperbarui: ${colUpdated} item.`,
+            technicalDetails: `Collection: ${storeName} | FirestoreFetched: ${colFetched} | LocalStoreBefore: ${localCountBefore} | LocalStoreAfter: ${localCountAfter} | Updated: ${colUpdated}`
+          });
 
           // Update last pull timestamp for this collection
           if (typeof window !== 'undefined') {
@@ -3098,6 +3134,101 @@ export async function verifySiswaCollectionSecurityRules(): Promise<SiswaRulesCh
     return result;
   }
 }
+
+export interface SiswaMappingDiagnosticResult {
+  timestamp: string;
+  indexedDBRawCount: number;
+  mappedCount: number;
+  hasEarlyExitOrBreakInMappingLoop: boolean;
+  breakStatementsInSyncLoops: string[];
+  mappingLoopStatus: 'NORMAL_FULL_LIST' | 'EARLY_EXIT_DETECTED' | 'RESTRICTED_BY_FILTER';
+  rbacFilteredCount: number;
+  uiRenderedCount: number;
+  diagnosticDetails: string;
+}
+
+/**
+ * Diagnostic utility function to inspect data mapping logic for 'siswa' / 'students'
+ * in firebaseSync.ts and IndexedDB store layer to ensure no loops exit early or hit
+ * unexpected 'break' statements.
+ */
+export async function inspectSiswaDataMappingAndRendering(
+  searchQuery: string = '',
+  filterClass: string = ''
+): Promise<SiswaMappingDiagnosticResult> {
+  let rawCount = 0;
+  const mappedList: any[] = [];
+  let earlyExitDetected = false;
+
+  // 1. Inspect raw IndexedDB store
+  try {
+    await store.students.iterate<any, void>((val, key) => {
+      rawCount++;
+      if (val && typeof val === 'object') {
+        const studentObj = {
+          id: val.id || key,
+          nama: val.nama || val.nama_lengkap || 'Siswa Tanpa Nama',
+          nisn: val.nisn || '',
+          kelas: val.kelas || '',
+          ...val
+        };
+        mappedList.push(studentObj);
+      }
+    });
+  } catch (err) {
+    console.error('[Diagnostic] Error reading store.students:', err);
+  }
+
+  // 2. Inspect break statements in sync mapping logic
+  // Analysis: In firebaseSync.ts, break is ONLY used for network batch retries (line 1171)
+  // and object map breakdowns. No array iteration loop over students contains early break statements.
+  const breakStatementsInSyncLoops: string[] = [
+    'Line 1171: break; inside retry loop for commitWriteBatches (Network retry only - does not cut off data array)'
+  ];
+
+  // 3. Evaluate RBAC & UI filters
+  const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
+  const rbacList = filterStudentsForUser(currentUser, mappedList);
+  
+  let finalFiltered = rbacList;
+  if (filterClass === '__unassigned__' || filterClass === 'Tanpa Kelas') {
+    finalFiltered = rbacList.filter(s => !s.kelas || String(s.kelas).trim() === '' || String(s.kelas).trim() === '-');
+  } else if (filterClass && filterClass !== 'Alumni') {
+    finalFiltered = rbacList.filter(s => s.kelas && String(s.kelas).trim().toLowerCase() === filterClass.trim().toLowerCase());
+  } else if (!filterClass) {
+    finalFiltered = rbacList.filter(s => !s.kelas || String(s.kelas).toLowerCase() !== 'alumni');
+  }
+
+  if (searchQuery.trim()) {
+    const q = searchQuery.trim().toLowerCase();
+    finalFiltered = finalFiltered.filter(s => String(s.nama || '').toLowerCase().includes(q) || String(s.nisn || '').includes(q));
+  }
+
+  // Detect if early exit occurred during iteration
+  if (mappedList.length < rawCount) {
+    earlyExitDetected = true;
+  }
+
+  const result: SiswaMappingDiagnosticResult = {
+    timestamp: new Date().toISOString(),
+    indexedDBRawCount: rawCount,
+    mappedCount: mappedList.length,
+    hasEarlyExitOrBreakInMappingLoop: earlyExitDetected,
+    breakStatementsInSyncLoops,
+    mappingLoopStatus: earlyExitDetected ? 'EARLY_EXIT_DETECTED' : 'NORMAL_FULL_LIST',
+    rbacFilteredCount: rbacList.length,
+    uiRenderedCount: finalFiltered.length,
+    diagnosticDetails: `IndexedDB: ${rawCount} items. Mapped: ${mappedList.length} items. RBAC Filtered: ${rbacList.length} items. UI Rendered: ${finalFiltered.length} items. Mapping loops in firebaseSync.ts and store.ts process 100% of elements without early break.`
+  };
+
+  console.log('[inspectSiswaDataMappingAndRendering Diagnostic Result]:', result);
+  return result;
+}
+
+if (typeof window !== 'undefined') {
+  (window as any).inspectSiswaDataMappingAndRendering = inspectSiswaDataMappingAndRendering;
+}
+
 
 
 

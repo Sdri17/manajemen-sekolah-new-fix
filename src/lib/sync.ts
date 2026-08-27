@@ -116,25 +116,310 @@ export function inspectStudentBeforeSync(student: any): void {
   console.log(`[Diagnostic] Inspecting student: ${student.nama || 'Unnamed'} (ID: ${student.id || 'No ID'})`);
 }
 
-export async function validateStudentData(): Promise<boolean> {
+export interface StudentFieldCheck {
+  fieldKey: string;
+  fieldLabel: string;
+  value: any;
+  status: 'OK' | 'MISSING' | 'INVALID_FORMAT';
+  isRequired: boolean;
+  autoFixValue?: any;
+  message?: string;
+}
+
+export interface StudentValidationPreviewItem {
+  rowIndex?: number;
+  id?: string;
+  nama: string;
+  nisn: string;
+  kelas: string;
+  jenis_kelamin?: string;
+  tanggal_lahir?: string;
+  nama_orang_tua?: string;
+  status: 'VALID' | 'MISSING_REQUIRED' | 'WARNING';
+  missingFields: string[];
+  missingRequiredFields: string[];
+  fieldChecks: StudentFieldCheck[];
+  sanitizedRecord: any;
+  issueSummary: string;
+}
+
+export interface StudentValidationReport {
+  isValid: boolean;
+  dataQualityScore: number;
+  totalRecords: number;
+  validCount: number;
+  missingRequiredCount: number;
+  warningCount: number;
+  items: StudentValidationPreviewItem[];
+  missingFieldsDistribution: Record<string, number>;
+  sanitizedStudents: any[];
+}
+
+export async function validateStudentDataWithReport(
+  studentsInput?: any[],
+  options: { autoFix?: boolean } = {}
+): Promise<StudentValidationReport> {
+  const { autoFix = true } = options;
+  let rawList: any[] = [];
+
+  if (Array.isArray(studentsInput) && studentsInput.length > 0) {
+    rawList = studentsInput;
+  } else {
+    await store.students.iterate<Student, void>((s) => {
+      if (s) rawList.push(s);
+    });
+  }
+
+  const items: StudentValidationPreviewItem[] = [];
+  const missingFieldsDistribution: Record<string, number> = {};
+  let validCount = 0;
+  let missingRequiredCount = 0;
+  let warningCount = 0;
+  const sanitizedStudents: any[] = [];
+
+  for (let idx = 0; idx < rawList.length; idx++) {
+    const s = rawList[idx];
+    if (!s) continue;
+
+    const fieldChecks: StudentFieldCheck[] = [];
+    const missingFields: string[] = [];
+    const missingRequiredFields: string[] = [];
+    const sanitized = { ...s };
+
+    // 1. Nama (CRITICAL REQUIRED)
+    const rawNama = String(s.nama || s.nama_lengkap || s.nama_siswa || '').trim();
+    if (!rawNama || rawNama === '-' || rawNama.toLowerCase() === 'undefined' || rawNama.toLowerCase() === 'null') {
+      fieldChecks.push({
+        fieldKey: 'nama',
+        fieldLabel: 'Nama Lengkap',
+        value: s.nama,
+        status: 'MISSING',
+        isRequired: true,
+        autoFixValue: 'Siswa Tanpa Nama',
+        message: 'Nama siswa kosong atau tidak valid.'
+      });
+      missingFields.push('Nama');
+      missingRequiredFields.push('Nama');
+      sanitized.nama = 'Siswa Tanpa Nama';
+    } else {
+      fieldChecks.push({
+        fieldKey: 'nama',
+        fieldLabel: 'Nama Lengkap',
+        value: rawNama,
+        status: 'OK',
+        isRequired: true
+      });
+      sanitized.nama = rawNama;
+    }
+
+    // 2. NISN
+    const rawNisn = String(s.nisn || '').trim();
+    if (!rawNisn || rawNisn === '-' || rawNisn === '0') {
+      fieldChecks.push({
+        fieldKey: 'nisn',
+        fieldLabel: 'NISN',
+        value: s.nisn,
+        status: 'MISSING',
+        isRequired: false,
+        autoFixValue: '-',
+        message: 'NISN belum diisi.'
+      });
+      missingFields.push('NISN');
+      sanitized.nisn = '-';
+    } else {
+      fieldChecks.push({
+        fieldKey: 'nisn',
+        fieldLabel: 'NISN',
+        value: rawNisn,
+        status: 'OK',
+        isRequired: false
+      });
+      sanitized.nisn = rawNisn;
+    }
+
+    // 3. Kelas
+    const rawKelas = String(s.kelas || '').trim();
+    if (!rawKelas || rawKelas === '-') {
+      fieldChecks.push({
+        fieldKey: 'kelas',
+        fieldLabel: 'Kelas',
+        value: s.kelas,
+        status: 'MISSING',
+        isRequired: false,
+        autoFixValue: '1',
+        message: 'Kelas belum ditentukan.'
+      });
+      missingFields.push('Kelas');
+      sanitized.kelas = '1';
+    } else {
+      fieldChecks.push({
+        fieldKey: 'kelas',
+        fieldLabel: 'Kelas',
+        value: rawKelas,
+        status: 'OK',
+        isRequired: false
+      });
+      sanitized.kelas = rawKelas;
+    }
+
+    // 4. Jenis Kelamin
+    const rawJk = String(s.jenis_kelamin || s.jk || '').trim();
+    if (!rawJk || (rawJk !== 'Laki-laki' && rawJk !== 'Perempuan' && rawJk !== 'L' && rawJk !== 'P')) {
+      fieldChecks.push({
+        fieldKey: 'jenis_kelamin',
+        fieldLabel: 'Jenis Kelamin',
+        value: s.jenis_kelamin,
+        status: 'MISSING',
+        isRequired: false,
+        autoFixValue: 'Laki-laki',
+        message: 'Jenis kelamin belum dipilih.'
+      });
+      missingFields.push('Jenis Kelamin');
+      sanitized.jenis_kelamin = 'Laki-laki';
+    } else {
+      const normalizedJk = (rawJk === 'L' || rawJk.toLowerCase() === 'laki-laki') ? 'Laki-laki' : 'Perempuan';
+      fieldChecks.push({
+        fieldKey: 'jenis_kelamin',
+        fieldLabel: 'Jenis Kelamin',
+        value: normalizedJk,
+        status: 'OK',
+        isRequired: false
+      });
+      sanitized.jenis_kelamin = normalizedJk;
+    }
+
+    // 5. Tanggal Lahir
+    const rawTgl = String(s.tanggal_lahir || s.tgl_lahir || '').trim();
+    if (!rawTgl || rawTgl === '-') {
+      fieldChecks.push({
+        fieldKey: 'tanggal_lahir',
+        fieldLabel: 'Tanggal Lahir',
+        value: s.tanggal_lahir,
+        status: 'MISSING',
+        isRequired: false,
+        autoFixValue: '-',
+        message: 'Tanggal lahir belum diisi.'
+      });
+      missingFields.push('Tanggal Lahir');
+      sanitized.tanggal_lahir = '-';
+    } else {
+      fieldChecks.push({
+        fieldKey: 'tanggal_lahir',
+        fieldLabel: 'Tanggal Lahir',
+        value: rawTgl,
+        status: 'OK',
+        isRequired: false
+      });
+      sanitized.tanggal_lahir = rawTgl;
+    }
+
+    // 6. Nama Orang Tua / Wali
+    const rawOrtu = String(s.nama_orang_tua || s.nama_ayah || s.nama_ibu || '').trim();
+    if (!rawOrtu || rawOrtu === '-') {
+      fieldChecks.push({
+        fieldKey: 'nama_orang_tua',
+        fieldLabel: 'Nama Orang Tua',
+        value: s.nama_orang_tua,
+        status: 'MISSING',
+        isRequired: false,
+        autoFixValue: '-',
+        message: 'Nama orang tua/wali belum diisi.'
+      });
+      missingFields.push('Nama Orang Tua');
+      sanitized.nama_orang_tua = '-';
+    } else {
+      fieldChecks.push({
+        fieldKey: 'nama_orang_tua',
+        fieldLabel: 'Nama Orang Tua',
+        value: rawOrtu,
+        status: 'OK',
+        isRequired: false
+      });
+      sanitized.nama_orang_tua = rawOrtu;
+    }
+
+    missingFields.forEach(f => {
+      missingFieldsDistribution[f] = (missingFieldsDistribution[f] || 0) + 1;
+    });
+
+    let status: 'VALID' | 'MISSING_REQUIRED' | 'WARNING' = 'VALID';
+    if (missingRequiredFields.length > 0) {
+      status = 'MISSING_REQUIRED';
+      missingRequiredCount++;
+    } else if (missingFields.length > 0) {
+      status = 'WARNING';
+      warningCount++;
+    } else {
+      validCount++;
+    }
+
+    let issueSummary = 'Lengkap & Valid';
+    if (missingRequiredFields.length > 0) {
+      issueSummary = `Wajib Diisi Kosong: ${missingRequiredFields.join(', ')}`;
+    } else if (missingFields.length > 0) {
+      issueSummary = `Perlu Melengkapi: ${missingFields.join(', ')}`;
+    }
+
+    items.push({
+      rowIndex: idx + 1,
+      id: s.id,
+      nama: sanitized.nama,
+      nisn: sanitized.nisn,
+      kelas: sanitized.kelas,
+      jenis_kelamin: sanitized.jenis_kelamin,
+      tanggal_lahir: sanitized.tanggal_lahir,
+      nama_orang_tua: sanitized.nama_orang_tua,
+      status,
+      missingFields,
+      missingRequiredFields,
+      fieldChecks,
+      sanitizedRecord: autoFix ? sanitized : s,
+      issueSummary
+    });
+
+    sanitizedStudents.push(autoFix ? sanitized : s);
+  }
+
+  const totalRecords = rawList.length;
+  let dataQualityScore = 100;
+  if (totalRecords > 0) {
+    const totalFieldsCheck = totalRecords * 6;
+    let missingFieldsTotal = 0;
+    items.forEach(it => { missingFieldsTotal += it.missingFields.length; });
+    dataQualityScore = Math.max(0, Math.round(((totalFieldsCheck - missingFieldsTotal) / totalFieldsCheck) * 100));
+  }
+
+  return {
+    isValid: missingRequiredCount === 0,
+    dataQualityScore,
+    totalRecords,
+    validCount,
+    missingRequiredCount,
+    warningCount,
+    items,
+    missingFieldsDistribution,
+    sanitizedStudents
+  };
+}
+
+export async function validateStudentData(
+  studentsInput?: any[],
+  options: { autoFix?: boolean; saveToStore?: boolean } = {}
+): Promise<boolean> {
+  const { autoFix = true, saveToStore = true } = options;
   console.log('[Validation] Auto-sanitizing student data before sync...');
-  await store.students.iterate<Student, void>((s, key) => {
-    let modified = false;
-    if (!s.nisn || String(s.nisn).trim() === '') { s.nisn = '-'; modified = true; }
-    if (!s.kelas || String(s.kelas).trim() === '') { s.kelas = '1'; modified = true; }
-    if (!s.jenis_kelamin || (s.jenis_kelamin !== 'Laki-laki' && s.jenis_kelamin !== 'Perempuan')) {
-      s.jenis_kelamin = 'Laki-laki';
-      modified = true;
+
+  const report = await validateStudentDataWithReport(studentsInput, { autoFix });
+
+  if (saveToStore && !studentsInput) {
+    for (const item of report.items) {
+      if (item.missingFields.length > 0 && item.id) {
+        await store.students.setItem(item.id, item.sanitizedRecord).catch(() => {});
+      }
     }
-    if (!s.nama_orang_tua || String(s.nama_orang_tua).trim() === '') {
-      s.nama_orang_tua = [s.nama_ayah, s.nama_ibu].filter(Boolean).join(' / ') || '-';
-      modified = true;
-    }
-    if (modified) {
-      store.students.setItem(key, s);
-    }
-  });
-  console.log('[Validation] Student data auto-sanitized successfully!');
+  }
+
+  console.log(`[Validation] Student validation complete. Quality score: ${report.dataQualityScore}%. Total: ${report.totalRecords}, Valid: ${report.validCount}`);
   return true;
 }
 

@@ -25,6 +25,19 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   public override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
     console.error('Uncaught error caught by ErrorBoundary:', error, errorInfo);
     this.setState({ errorInfo });
+
+    // Auto-reload on dynamic import / chunk loading errors if not reloaded yet
+    if (
+      error?.message &&
+      (error.message.includes('Failed to fetch dynamically imported module') ||
+        error.message.includes('Importing a module script failed') ||
+        error.message.includes('Loading chunk'))
+    ) {
+      if (typeof window !== 'undefined' && !sessionStorage.getItem('chunk_reload_attempts')) {
+        sessionStorage.setItem('chunk_reload_attempts', 'true');
+        window.location.reload();
+      }
+    }
   }
 
   private handleReload = (): void => {

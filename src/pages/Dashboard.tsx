@@ -496,7 +496,7 @@ export default function Dashboard({ role, semester, syncData, onPullData, isSync
       if (filterKelas === 'Semua') {
         filteredStudents = userFilteredStudents.filter(s => !s.kelas || s.kelas.toLowerCase() !== 'alumni');
       } else {
-        filteredStudents = userFilteredStudents.filter(s => s.kelas === filterKelas);
+        filteredStudents = userFilteredStudents.filter(s => s.kelas && s.kelas.trim().toLowerCase() === filterKelas.trim().toLowerCase());
       }
 
       // Filter Kas entries strictly by selected class or assigned class

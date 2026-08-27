@@ -4,8 +4,9 @@ import { store, Student, Settings, StudentTask, Attendance, resumeSyncQueue } fr
 import { generateClassDataAndAttendancePDF } from '../lib/classReportPdf';
 import { syncAndGetClasses, getMergedClassesFromStudents } from '../lib/classHelper';
 import { getCurrentUser, getAssignedClasses, filterStudentsForUser, filterRecordsForUser } from '../lib/rbac';
-import { pushDataToSheets, sendDeleteToGoogleSheets, cascadeDeleteStudent, cascadeDeleteSelectedStudents, cascadeDeleteAllStudents } from '../lib/sync';
+import { pushDataToSheets, sendDeleteToGoogleSheets, cascadeDeleteStudent, cascadeDeleteSelectedStudents, cascadeDeleteAllStudents, validateStudentDataWithReport, StudentValidationReport } from '../lib/sync';
 import { pushAllLocalDataToFirebase, deleteDocFromFirebase } from '../lib/firebaseSync';
+import { normalizeStudentRecord, parseAndNormalizeBackup } from '../lib/backupHelper';
 import { formatWhatsAppNumber } from '../lib/WhatsAppSender';
 import { v4 as uuidv4 } from 'uuid';
 import { Download, Upload, Plus, Edit2, Trash2, Settings as SettingsIcon, X, User, LineChart, TrendingUp, Calendar, Award, Activity, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, GraduationCap, QrCode, Bell, MessageSquare, CheckCircle2 } from 'lucide-react';
@@ -24,6 +25,8 @@ import { PendingBadge } from '../components/PendingBadge';
 import BackgroundDataBanner from '../components/BackgroundDataBanner';
 import LockingIndicator from '../components/LockingIndicator';
 import { useDocumentLocking } from '../lib/documentLock';
+import ImportDiagnosticModal, { ImportLogItem, ImportDiagnosticReport, ImportRowDetail } from '../components/ImportDiagnosticModal';
+import ImportPreviewModal from '../components/ImportPreviewModal';
 
 export default function DataSiswa({ semester, role, settings, setSettings }: { semester: string, role: 'guru' | 'kepsek', settings: Settings | null, setSettings?: (s: Settings | null) => void }) {
   const { isPending } = usePendingSync();
@@ -49,6 +52,96 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
   // QR Code Cards Modal State
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
   const [selectedQrStudent, setSelectedQrStudent] = useState<Student | null>(null);
+
+  // Diagnostic Import Logs Modal State
+  const [isDiagnosticModalOpen, setIsDiagnosticModalOpen] = useState(false);
+  const [lastDiagnosticReport, setLastDiagnosticReport] = useState<ImportDiagnosticReport | null>(null);
+
+  // Import Preview Phase Modal State
+  const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+  const [pendingImportContext, setPendingImportContext] = useState<{
+    importedStudents: Student[];
+    validationReport: StudentValidationReport;
+    report: ImportDiagnosticReport;
+    fileName: string;
+    fileSize?: string;
+    fileInput: HTMLInputElement;
+  } | null>(null);
+
+  const handleFinalizeImport = async (sanitizedStudents: any[], autoFixApplied: boolean) => {
+    setIsPreviewModalOpen(false);
+    if (!pendingImportContext) return;
+
+    const { report, fileInput } = pendingImportContext;
+    const studentsToSave = sanitizedStudents && sanitizedStudents.length > 0 
+      ? sanitizedStudents 
+      : pendingImportContext.importedStudents;
+
+    const addLog = (level: 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR', step: ImportLogItem['step'], message: string, details?: string) => {
+      report.logs.push({
+        id: uuidv4(),
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour12: false }),
+        level,
+        step,
+        message,
+        details
+      });
+    };
+
+    addLog('INFO', 'INDEXEDDB_SAVE', `Finalisasi Impor (${autoFixApplied ? 'Auto-Sanitize Aktif' : 'Raw Data'}): Menyimpan ${studentsToSave.length} siswa ke database lokal (IndexedDB)...`);
+    resumeSyncQueue();
+    let importCount = 0;
+
+    for (const student of studentsToSave) {
+      try {
+        await store.students.setItem(student.id, student);
+        await store.syncQueue.setItem(`students::${student.id}`, 'updated');
+        importCount++;
+      } catch (itemErr: any) {
+        report.errorCount++;
+        addLog('ERROR', 'INDEXEDDB_SAVE', `Gagal menyimpan siswa "${student.nama}" (ID: ${student.id}) ke IndexedDB: ${itemErr?.message || itemErr}`, itemErr?.stack);
+      }
+    }
+
+    report.indexedDbSaved = importCount;
+    report.successCount = importCount;
+    addLog('SUCCESS', 'INDEXEDDB_SAVE', `Berhasil menyimpan ${importCount} dari ${studentsToSave.length} siswa ke IndexedDB lokal.`);
+
+    resumeSyncQueue();
+    await syncAndGetClasses();
+    await loadStudents();
+
+    window.dispatchEvent(new Event('sync-status-changed'));
+    window.dispatchEvent(new Event('data-changed'));
+
+    addLog('INFO', 'FIREBASE_SYNC', 'Menyinkronkan data siswa hasil impor ke Cloud Firebase...');
+
+    try {
+      await pushAllLocalDataToFirebase();
+      report.firebaseSynced = importCount;
+      addLog('SUCCESS', 'FIREBASE_SYNC', `Seluruh data ${importCount} siswa berhasil diunggah & disinkronkan ke Cloud Firebase!`);
+      toast.success(`Berhasil mengimpor ${importCount} siswa!`);
+    } catch (syncErr: any) {
+      console.warn('[DataSiswa Import Sync Error]:', syncErr);
+      const errMsg = syncErr?.message || String(syncErr);
+      const isPermissionErr = errMsg.toLowerCase().includes('permission') || errMsg.toLowerCase().includes('denied');
+
+      if (isPermissionErr) {
+        report.hasFirestorePermissionError = true;
+        addLog('ERROR', 'FIREBASE_SYNC', 'Permission Firestore Denied: Hak akses menulis tidak mencukupi.', errMsg);
+      } else {
+        addLog('WARN', 'FIREBASE_SYNC', `Gagal menyinkronkan data ke Cloud Firebase: ${errMsg}. Data tetap tersimpan secara lokal.`, errMsg);
+      }
+
+      report.warnCount++;
+      toast.error(`Data ${importCount} siswa tersimpan secara lokal, namun gagal terhubung ke Cloud Firebase. Lihat detail diagnosa.`);
+    } finally {
+      setLastDiagnosticReport({ ...report });
+      setIsDiagnosticModalOpen(true);
+      if (fileInput) fileInput.value = '';
+      setPendingImportContext(null);
+    }
+  };
 
   const [grades, setGrades] = useState<any[]>([]);
   const [tasks, setTasks] = useState<StudentTask[]>([]);
@@ -271,18 +364,13 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
   };
 
   const cleanDummyData = async () => {
-    const dummyNames = [
-      'Budi Santoso', 'Siti Aminah', 'Andi Pratama', 'Rina Wijaya', 
-      'Fajar Nugroho', 'Dewi Lestari', 'Eko Saputro', 'Ayu Maharani', 
-      'Dedi Kurniawan', 'Sri Rahayu'
-    ];
     let deletedCount = 0;
     const idsToDelete: string[] = [];
     await store.students.iterate<Student, void>((val) => {
       if (!val) return;
       const sName = val.nama ? String(val.nama).trim() : '';
-      // Remove dummy names or records without a valid name
-      if (dummyNames.includes(sName) || !sName || sName === '-' || sName.toLowerCase() === 'undefined' || sName.toLowerCase() === 'null') {
+      // Only remove empty/corrupt records without a valid student name
+      if (!sName || sName === '-' || sName.toLowerCase() === 'undefined' || sName.toLowerCase() === 'null') {
         idsToDelete.push(val.id);
       }
     });
@@ -294,7 +382,7 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
       deletedCount++;
     }
     if (deletedCount > 0) {
-      toast.success(`Berhasil membersihkan ${deletedCount} data siswa (dummy/kosong) dari sistem!`);
+      toast.success(`Berhasil membersihkan ${deletedCount} data siswa kosong dari sistem!`);
       loadStudents();
     }
   };
@@ -318,7 +406,7 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
 
   useEffect(() => {
     if (isRestrictedClass && assignedClasses.length > 0) {
-      if (!filterClass || !assignedClasses.some(c => c.toLowerCase() === filterClass.toLowerCase())) {
+      if (filterClass && !assignedClasses.some(c => c.toLowerCase() === filterClass.toLowerCase())) {
         if (assignedClasses[0] && filterClass !== assignedClasses[0]) {
           setFilterClass(assignedClasses[0]);
         }
@@ -329,8 +417,10 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
   const loadStudents = async () => {
     const list: Student[] = [];
     const invalidIdsToRemove: string[] = [];
+    let totalIterated = 0;
 
     await store.students.iterate<Student, void>((val, key) => {
+      totalIterated++;
       if (!val) {
         if (key) invalidIdsToRemove.push(key);
         return;
@@ -346,6 +436,22 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
       if (!sName || sName === '-' || sName.toLowerCase() === 'undefined' || sName.toLowerCase() === 'null') {
         if (key) invalidIdsToRemove.push(key);
       } else {
+        // Auto-sanitize student record if kelas is accidentally set to a date pattern
+        let modified = false;
+        let sKelas = val.kelas ? String(val.kelas).trim() : '';
+        if (sKelas) {
+          const isDatePattern = /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(sKelas) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(sKelas);
+          if (isDatePattern) {
+            if (!val.tanggal_lahir || !String(val.tanggal_lahir).trim()) {
+              val.tanggal_lahir = sKelas;
+            }
+            val.kelas = '';
+            modified = true;
+          }
+        }
+        if (modified && key) {
+          store.students.setItem(key, val).catch(() => {});
+        }
         list.push(val);
       }
     });
@@ -359,16 +465,37 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
     }
 
     const userFiltered = filterStudentsForUser(currentUser, list);
+
+    console.log(`[DataSiswa Data Layer Diagnostic]`, {
+      indexedDBTotalIterated: totalIterated,
+      validRecordsLoaded: list.length,
+      purgedGhostCount: invalidIdsToRemove.length,
+      currentUserRole: currentUser?.role || 'guest',
+      currentUserAssignedClasses: currentUser?.assignedClasses || [],
+      rbacFilteredCount: userFiltered.length
+    });
+
     setStudents(userFiltered.sort((a, b) => a.no - b.no));
     await syncAndGetClasses();
   };
 
-  const filteredStudents = students.filter(s => {
+  const filteredStudents = students.filter((s, iterIdx) => {
     const matchName = s.nama.toLowerCase().includes(searchName.toLowerCase());
-    const matchClass = filterClass 
-      ? s.kelas === filterClass 
-      : (!s.kelas || s.kelas.toLowerCase() !== 'alumni');
-    return matchName && matchClass;
+    let matchClass = true;
+
+    if (filterClass === '__unassigned__' || filterClass === 'Tanpa Kelas') {
+      matchClass = !s.kelas || s.kelas.trim() === '' || s.kelas.trim() === '-' || s.kelas.trim().toLowerCase() === 'umum';
+    } else if (filterClass === 'Alumni') {
+      matchClass = !!s.kelas && s.kelas.toLowerCase() === 'alumni';
+    } else if (filterClass) {
+      matchClass = !!s.kelas && s.kelas.trim().toLowerCase() === filterClass.trim().toLowerCase();
+    } else {
+      // Empty filterClass means 'Semua Kelas' -> show all students except Alumni
+      matchClass = !s.kelas || s.kelas.toLowerCase() !== 'alumni';
+    }
+
+    const isMatch = matchName && matchClass;
+    return isMatch;
   }).sort((a, b) => {
     let valA: any = (a as any)[sortField] ?? '';
     let valB: any = (b as any)[sortField] ?? '';
@@ -387,6 +514,19 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
   });
 
   const paginatedStudents = filteredStudents.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  useEffect(() => {
+    console.log(`[DataSiswa UI Layer Diagnostic]`, {
+      stateStudentsCount: students.length,
+      filterClassActive: filterClass || 'Semua Kelas',
+      searchNameActive: searchName || 'N/A',
+      filteredStudentsTotal: filteredStudents.length,
+      currentPage,
+      pageSize,
+      paginatedItemsMappedToUI: paginatedStudents.length,
+      isRestrictedToSingleElement: paginatedStudents.length === 1 && filteredStudents.length > 1
+    });
+  }, [students.length, filterClass, searchName, filteredStudents.length, currentPage, pageSize, paginatedStudents.length]);
 
   const allMergedClasses = getMergedClassesFromStudents(students, settings?.daftar_kelas);
   const uniqueClasses = isRestrictedClass 
@@ -631,48 +771,211 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
   };
 
   const downloadTemplate = () => {
-    const template = [{ 
-      no: 1, 
-      nama: 'Nama Siswa', 
-      nisn: '12345', 
-      nipd: '123', 
-      jenis_kelamin: 'Laki-laki', 
-      tempat_lahir: 'Jakarta', 
-      tanggal_lahir: '2010-01-01', 
-      kelas: '7A', 
-      nama_ayah: 'Ayah', 
-      nama_ibu: 'Ibu', 
-      nama_orang_tua: 'Ayah / Ibu', 
-      no_telp_ortu: '0812345' 
-    }];
-    const ws = XLSX.utils.json_to_sheet(template);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    XLSX.writeFile(wb, "Template_Import_Siswa.xlsx");
+    try {
+      const template = [
+        { 
+          no: 1, 
+          nama: 'Ahmad Dahlan', 
+          nisn: '0012345678', 
+          nipd: '2023001', 
+          jenis_kelamin: 'Laki-laki', 
+          tempat_lahir: 'Jakarta', 
+          tanggal_lahir: '2010-05-15', 
+          kelas: '7A', 
+          nama_ayah: 'Budi Santoso', 
+          nama_ibu: 'Siti Aminah', 
+          nama_orang_tua: 'Budi Santoso / Siti Aminah', 
+          no_telp_ortu: '081234567890' 
+        },
+        { 
+          no: 2, 
+          nama: 'Siti Nurhaliza', 
+          nisn: '0087654321', 
+          nipd: '2023002', 
+          jenis_kelamin: 'Perempuan', 
+          tempat_lahir: 'Bandung', 
+          tanggal_lahir: '2010-08-20', 
+          kelas: '7A', 
+          nama_ayah: 'Rahmat Hidayat', 
+          nama_ibu: 'Dewi Lestari', 
+          nama_orang_tua: 'Rahmat Hidayat / Dewi Lestari', 
+          no_telp_ortu: '089876543210' 
+        }
+      ];
+      const ws = XLSX.utils.json_to_sheet(template);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Data_Siswa");
+      XLSX.writeFile(wb, "Template_Import_Siswa_EduSync.xlsx");
+      toast.success('Template Excel siswa berhasil diunduh!');
+    } catch (err: any) {
+      console.error('[Template Export Error]:', err);
+      toast.error('Gagal mengunduh template Excel: ' + (err?.message || err));
+    }
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = async (evt) => {
-        try {
-          const bstr = evt.target?.result;
-          const wb = XLSX.read(bstr, { type: 'binary' });
-          const wsname = wb.SheetNames[0];
-          const ws = wb.Sheets[wsname];
-          
-          // Get raw rows first to detect header row dynamically (in case of leading title/empty rows)
-          const rawRows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1 });
-          if (rawRows.length === 0) {
-            toast.error('File Excel kosong!');
-            return;
+    if (!file) return;
+
+    const fileInput = e.target;
+    const isJsonFile = file.name.endsWith('.json') || file.type.includes('json');
+
+    const logs: ImportLogItem[] = [];
+    const addLog = (
+      level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS',
+      step: 'FILE_READ' | 'PARSING' | 'HEADER_DETECTION' | 'ROW_VALIDATION' | 'INDEXEDDB_SAVE' | 'FIREBASE_SYNC',
+      message: string,
+      details?: string,
+      rowIndex?: number
+    ) => {
+      const item: ImportLogItem = {
+        id: uuidv4(),
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour12: false }),
+        level,
+        step,
+        message,
+        details,
+        rowIndex
+      };
+      logs.push(item);
+      if (level === 'ERROR') {
+        console.error(`[Import Diagnostic ${step}] ${message}`, details || '');
+      } else if (level === 'WARN') {
+        console.warn(`[Import Diagnostic ${step}] ${message}`, details || '');
+      } else {
+        console.log(`[Import Diagnostic ${step}] ${message}`, details || '');
+      }
+    };
+
+    const formatBytes = (bytes: number) => {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    const rowDetails: ImportRowDetail[] = [];
+    const usedIdsSet = new Set<string>();
+
+    const report: ImportDiagnosticReport = {
+      fileName: file.name,
+      fileSize: formatBytes(file.size),
+      fileType: file.type || (isJsonFile ? 'application/json' : 'spreadsheet'),
+      timestamp: new Date().toLocaleString('id-ID'),
+      totalRowsRead: 0,
+      successCount: 0,
+      warnCount: 0,
+      errorCount: 0,
+      indexedDbSaved: 0,
+      firebaseSynced: 0,
+      logs: logs,
+      rowDetails: rowDetails,
+      hasFirestorePermissionError: false,
+      hasFormatError: false,
+      hasIdReassigned: false,
+      rbacFilteredCount: 0
+    };
+
+    addLog('INFO', 'FILE_READ', `Memulai impor berkas "${file.name}" (${report.fileSize}, tipe: ${report.fileType}).`);
+
+    const reader = new FileReader();
+
+    reader.onerror = (evt) => {
+      const readErr = evt.target?.error?.message || 'Gagal membaca berkas dari media penyimpanan.';
+      addLog('ERROR', 'FILE_READ', `Gagal membaca berkas disk: ${readErr}`);
+      report.errorCount++;
+      setLastDiagnosticReport({ ...report });
+      setIsDiagnosticModalOpen(true);
+      toast.error(`Gagal membaca file: ${readErr}`);
+    };
+
+    reader.onload = async (evt) => {
+      try {
+        let importedStudents: Student[] = [];
+
+        // Pre-populate usedIdsSet with all existing student IDs and NISNs to prevent overwriting local records
+        const usedIdsSet = new Set<string>();
+        for (const existing of students) {
+          if (existing.id) usedIdsSet.add(String(existing.id).trim());
+          if (existing.nisn) usedIdsSet.add(String(existing.nisn).trim());
+        }
+
+        const defaultClassForImport = (filterClass && filterClass.toLowerCase() !== 'alumni') ? filterClass : '';
+
+        if (isJsonFile) {
+          addLog('INFO', 'PARSING', 'Memproses berkas format JSON backup / list siswa...');
+          const textContent = evt.target?.result as string;
+          let jsonParsed: any;
+          try {
+            jsonParsed = JSON.parse(textContent);
+            addLog('SUCCESS', 'PARSING', 'Struktur JSON berhasil di-parse tanpa kesalahan sintaksis.');
+          } catch (jsonErr: any) {
+            report.hasFormatError = true;
+            addLog('ERROR', 'PARSING', `Format JSON tidak valid (Syntax Error): ${jsonErr?.message}`, textContent.substring(0, 200));
+            throw new Error(`File JSON rusak atau memiliki sintaksis tidak valid: ${jsonErr?.message}`);
           }
 
-          // Detect header row: first row that has at least 2 key student indicators
+          const normalizedBackup = parseAndNormalizeBackup(jsonParsed);
+
+          if (normalizedBackup && normalizedBackup.students && normalizedBackup.students.length > 0) {
+            importedStudents = normalizedBackup.students;
+            addLog('SUCCESS', 'PARSING', `Berhasil mengekstrak ${importedStudents.length} siswa dari koleksi backup JSON.`);
+          } else if (Array.isArray(jsonParsed)) {
+            importedStudents = jsonParsed.map((item, idx) => normalizeStudentRecord(item, idx + 1, usedIdsSet)).filter(Boolean);
+            addLog('SUCCESS', 'PARSING', `Berhasil mengonversi ${importedStudents.length} elemen array JSON menjadi record siswa.`);
+          } else {
+            report.hasFormatError = true;
+            addLog('ERROR', 'PARSING', 'File JSON tidak mengandung array siswa atau kunci koleksi backup yang valid.');
+            throw new Error('File JSON tidak berisi array siswa atau backup yang valid.');
+          }
+
+          report.totalRowsRead = importedStudents.length;
+
+          importedStudents.forEach((s, idx) => {
+            rowDetails.push({
+              rowIndex: idx + 1,
+              nama: s.nama,
+              nisn: s.nisn || '-',
+              kelas: s.kelas || '-',
+              status: 'SUCCESS',
+              message: 'Berhasil diekstrak dari berkas JSON.'
+            });
+          });
+        } else {
+          // Process Excel / CSV / ODS
+          addLog('INFO', 'PARSING', 'Membaca data biner spreadsheet (XLSX / CSV / ODS)...');
+          let wb: XLSX.WorkBook;
+          try {
+            const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+            wb = XLSX.read(data, { type: 'array', cellDates: true, raw: false });
+            addLog('SUCCESS', 'PARSING', `Berkas spreadsheet berhasil dibuka. Ditemukan ${wb.SheetNames.length} lembar kerja (Sheet): [${wb.SheetNames.join(', ')}].`);
+          } catch (xlsxErr: any) {
+            report.hasFormatError = true;
+            addLog('ERROR', 'PARSING', `Gagal mengurai lembar kerja spreadsheet: ${xlsxErr?.message}`);
+            throw new Error(`File CSV / Excel rusak atau format biner tidak valid: ${xlsxErr?.message}`);
+          }
+
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+
+          const rawRows = XLSX.utils.sheet_to_json<any[]>(ws, { header: 1, raw: false });
+          report.totalRowsRead = rawRows.length;
+
+          if (rawRows.length === 0) {
+            report.hasFormatError = true;
+            addLog('ERROR', 'PARSING', `Sheet "${wsname}" kosong, tidak ada baris data.`);
+            throw new Error('File spreadsheet kosong atau tidak berisi baris data!');
+          }
+
+          addLog('INFO', 'HEADER_DETECTION', `Menganalisis ${rawRows.length} baris mentah pada Sheet "${wsname}" untuk menemukan baris header...`);
+
+          // Detect header row dynamically
           let headerRowIdx = 0;
-          const keyIndicators = ['nama', 'nisn', 'kelas', 'no', 'jenis kelamin', 'jk', 'nipd', 'ortu', 'wali'];
-          for (let i = 0; i < Math.min(rawRows.length, 12); i++) {
+          let maxMatches = 0;
+          const keyIndicators = ['nama', 'nisn', 'kelas', 'no', 'jenis', 'jk', 'nipd', 'ortu', 'wali', 'ayah', 'ibu', 'tempat', 'tanggal'];
+          
+          for (let i = 0; i < Math.min(rawRows.length, 15); i++) {
             const row = rawRows[i];
             if (Array.isArray(row)) {
               const matchCount = row.filter(cell => {
@@ -680,122 +983,166 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
                 const cellStr = String(cell).trim().toLowerCase();
                 return keyIndicators.some(ind => cellStr.includes(ind));
               }).length;
-              if (matchCount >= 2) {
+
+              if (matchCount > maxMatches) {
+                maxMatches = matchCount;
                 headerRowIdx = i;
-                break;
               }
             }
           }
 
-          console.log(`[Import Excel] Mendeteksi baris header pada indeks ke-${headerRowIdx}`);
-
           const rawHeaders = rawRows[headerRowIdx];
           const headers = Array.isArray(rawHeaders) ? rawHeaders.map(h => String(h || '').trim()) : [];
+
+          if (maxMatches === 0) {
+            report.hasFormatError = true;
+            addLog('WARN', 'HEADER_DETECTION', `Tidak dapat menemukan baris header baku pada 15 baris pertama. Menggunakan baris pertama (indeks 0) sebagai header default.`);
+          } else {
+            addLog('SUCCESS', 'HEADER_DETECTION', `Baris header terdeteksi pada baris ke-${headerRowIdx + 1} dengan kecocokan ${maxMatches} kolom indikator. Header kolom: [${headers.filter(Boolean).join(', ')}]`);
+          }
+
           const dataRows = rawRows.slice(headerRowIdx + 1);
+          addLog('INFO', 'ROW_VALIDATION', `Memulai validasi dan ekstraksi ${dataRows.length} baris data...`);
 
-          let importCount = 0;
-
-          for (const row of dataRows) {
-            if (!Array.isArray(row) || row.filter(item => item !== null && item !== undefined && String(item).trim() !== '').length === 0) continue;
+          for (let idx = 0; idx < dataRows.length; idx++) {
+            const actualRowNumber = headerRowIdx + 2 + idx;
+            const row = dataRows[idx];
+            
+            if (!Array.isArray(row) || row.filter(item => item !== null && item !== undefined && String(item).trim() !== '').length === 0) {
+              addLog('WARN', 'ROW_VALIDATION', `Baris ke-${actualRowNumber} kosong, dilewati.`, undefined, actualRowNumber);
+              report.warnCount++;
+              rowDetails.push({
+                rowIndex: actualRowNumber,
+                nama: '-',
+                nisn: '-',
+                kelas: '-',
+                status: 'SKIPPED',
+                message: 'Baris ke-' + actualRowNumber + ' kosong, dilewati.'
+              });
+              continue;
+            }
 
             const cleanRow: any = {};
             headers.forEach((header, colIdx) => {
               if (header) {
+                const rawVal = row[colIdx];
+                const cleanVal = rawVal !== undefined && rawVal !== null ? rawVal : '';
+                cleanRow[header] = cleanVal;
                 const cleanKey = header.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
-                cleanRow[cleanKey] = row[colIdx];
+                if (cleanKey) {
+                  cleanRow[cleanKey] = cleanVal;
+                }
               }
             });
 
-            // Skip rows that don't have a name
-            const nama = String(cleanRow.nama || cleanRow.nama_lengkap || cleanRow.nama_siswa || '').trim();
-            if (!nama) continue;
-
-            // Apply fallbacks
-            const nisn = String(cleanRow.nisn || cleanRow.nisn_siswa || cleanRow.nomor_induk_siswa_nasional || cleanRow.nomor_induk || cleanRow.ni || cleanRow.no_nisn || cleanRow.nomor_nisn || cleanRow.no_induk_nasional || cleanRow.nomor_induk_nasional || '').trim();
-            const kelas = String(cleanRow.kelas || cleanRow.nama_kelas || cleanRow.rombel || cleanRow.ruang || cleanRow.rombongan_belajar || cleanRow.kelas_siswa || cleanRow.kelas_tingkat || cleanRow.tingkat || '').trim();
-            const no_telp_ortu = String(cleanRow.no_telp_ortu || cleanRow.nomor_telepon || cleanRow.no_telp || cleanRow.nomor_hp || cleanRow.no_hp || cleanRow.telp || cleanRow.telepon || cleanRow.hp || '').trim();
-            
-            let nama_orang_tua = String(cleanRow.nama_orang_tua || cleanRow.nama_ortu || cleanRow.orang_tua || cleanRow.nama_wali || cleanRow.wali || cleanRow.ayah_ibu || '').trim();
-            let nama_ayah = String(cleanRow.nama_ayah || '').trim();
-            let nama_ibu = String(cleanRow.nama_ibu || '').trim();
-            if (!nama_orang_tua && (nama_ayah || nama_ibu)) {
-              nama_orang_tua = [nama_ayah, nama_ibu].filter(Boolean).join(' / ');
-            }
-            if (nama_orang_tua && !nama_ayah && !nama_ibu) {
-              nama_ayah = nama_orang_tua;
+            const rawNama = cleanRow.nama || cleanRow.nama_lengkap || cleanRow.nama_siswa || cleanRow['Nama'] || cleanRow['Nama Siswa'];
+            if (!rawNama || String(rawNama).trim() === '') {
+              addLog('WARN', 'ROW_VALIDATION', `Baris ke-${actualRowNumber} dilewati karena kolom "Nama" kosong.`, JSON.stringify(cleanRow), actualRowNumber);
+              report.warnCount++;
+              rowDetails.push({
+                rowIndex: actualRowNumber,
+                nama: '-',
+                nisn: String(cleanRow.nisn || cleanRow['NISN'] || '-'),
+                kelas: String(cleanRow.kelas || cleanRow['Kelas'] || '-'),
+                status: 'WARN',
+                message: 'Dilewati karena kolom "Nama" tidak terisi.'
+              });
+              continue;
             }
 
-            let jenis_kelamin = String(cleanRow.jenis_kelamin || cleanRow.jk || cleanRow.gender || cleanRow.sex || cleanRow.l_p || cleanRow.lp || cleanRow.kelamin || '').trim();
-            if (jenis_kelamin) {
-              const jkLower = jenis_kelamin.toLowerCase();
-              if (jkLower === 'l' || jkLower.startsWith('laki')) {
-                jenis_kelamin = 'Laki-laki';
-              } else if (jkLower === 'p' || jkLower.startsWith('perem') || jkLower.startsWith('wanita')) {
-                jenis_kelamin = 'Perempuan';
+            const studentObj = normalizeStudentRecord(cleanRow, idx + 1, usedIdsSet, defaultClassForImport);
+            if (studentObj && studentObj.nama) {
+              if (semester) studentObj.semester = semester;
+              importedStudents.push(studentObj);
+
+              if (studentObj._isIdReassigned) {
+                report.hasIdReassigned = true;
+                report.warnCount++;
+                addLog('WARN', 'ROW_VALIDATION', `Baris ke-${actualRowNumber}: Siswa "${studentObj.nama}" Memiliki ID/NISN duplikat. Sistem memberikan ID unik baru untuk mencegah data tertimpa.`, undefined, actualRowNumber);
+                rowDetails.push({
+                  rowIndex: actualRowNumber,
+                  nama: studentObj.nama,
+                  nisn: studentObj.nisn || '-',
+                  kelas: studentObj.kelas || '-',
+                  status: 'WARN',
+                  message: 'NISN/ID duplikat detected. Diberikan ID unik baru agar data tersimpan utuh.',
+                  isIdReassigned: true
+                });
+              } else {
+                addLog('INFO', 'ROW_VALIDATION', `Baris ke-${actualRowNumber}: Siswa "${studentObj.nama}" (NISN: ${studentObj.nisn || '-'}, Kelas: ${studentObj.kelas || '-'}) berhasil dipetakan.`, undefined, actualRowNumber);
+                rowDetails.push({
+                  rowIndex: actualRowNumber,
+                  nama: studentObj.nama,
+                  nisn: studentObj.nisn || '-',
+                  kelas: studentObj.kelas || '-',
+                  status: 'SUCCESS',
+                  message: 'Berhasil dipetakan dan siap disimpan.'
+                });
               }
-            }
-
-            const primaryId = (nisn && nisn !== '-') ? nisn : uuidv4();
-
-            const student: Student = {
-              id: primaryId,
-              no: parseInt(cleanRow.no || cleanRow.no_urut || '0') || (importCount + 1),
-              nama: nama,
-              nisn: nisn || primaryId,
-              nipd: String(cleanRow.nipd || cleanRow.nipd_siswa || '').trim(),
-              tempat_lahir: String(cleanRow.tempat_lahir || cleanRow.tempat || '').trim(),
-              tanggal_lahir: String(cleanRow.tanggal_lahir || cleanRow.tgl_lahir || '').trim(),
-              kelas: kelas,
-              nama_ayah: nama_ayah,
-              nama_ibu: nama_ibu,
-              nama_orang_tua: nama_orang_tua,
-              no_telp_ortu: no_telp_ortu,
-              nomor_telepon: no_telp_ortu,
-              jenis_kelamin: jenis_kelamin,
-              semester: semester
-            };
-            
-            // Store any extra columns as custom attributes on the student
-            const knownKeys = ['id', 'no', 'nama', 'nisn', 'nipd', 'tempat_lahir', 'tanggal_lahir', 'kelas', 'nama_ayah', 'nama_ibu', 'nama_orang_tua', 'no_telp_ortu', 'nomor_telepon', 'jenis_kelamin', 'semester'];
-            Object.entries(cleanRow).forEach(([k, v]) => {
-              if (!knownKeys.includes(k) && k.trim() !== '') {
-                student[k] = v;
-              }
-            });
-
-            resumeSyncQueue();
-            try {
-              await store.students.setItem(student.id, student);
-              await store.syncQueue.setItem(`students::${student.id}`, 'updated');
-              console.log(`[Import Excel Log] Saved student ${importCount + 1}: Primary ID (NISN)=${student.id}, Nama=${student.nama}`);
-              importCount++;
-            } catch (itemErr: any) {
-              console.error(`[Import Excel Error] Gagal menyimpan siswa ID ${student.id} ke IndexedDB:`, itemErr);
+            } else {
+              addLog('WARN', 'ROW_VALIDATION', `Baris ke-${actualRowNumber} gagal dipetakan menjadi objek siswa valid.`, JSON.stringify(cleanRow), actualRowNumber);
+              report.warnCount++;
+              rowDetails.push({
+                rowIndex: actualRowNumber,
+                nama: String(rawNama),
+                nisn: '-',
+                kelas: '-',
+                status: 'ERROR',
+                message: 'Gagal dipetakan menjadi objek siswa valid.'
+              });
             }
           }
-
-          // Verify total students stored in IndexedDB after import loop
-          const totalInIndexedDB = await store.students.length();
-          console.log(`[Import Excel Summary] Total data siswa tersimpan di IndexedDB ('store.students'): ${totalInIndexedDB} siswa.`);
-
-          await syncAndGetClasses();
-          loadStudents();
-          toast.success(`Berhasil mengimpor ${importCount} data siswa (Total di database: ${totalInIndexedDB})! Menyinkronkan ke Cloud Firebase...`);
-          window.dispatchEvent(new Event('sync-status-changed'));
-          window.dispatchEvent(new Event('data-changed'));
-
-          try {
-            await pushAllLocalDataToFirebase();
-            toast.success(`Data ${importCount} siswa berhasil disinkronkan ke Cloud Firebase!`);
-          } catch (syncErr: any) {
-            console.warn('[DataSiswa Import Sync Error]:', syncErr);
-            toast.error('Data tersimpan lokal, namun gagal terhubung ke Cloud Firebase: ' + (syncErr?.message || syncErr));
-          }
-        } catch (err: any) {
-          toast.error(`Gagal memproses file Excel: ${err.message}`);
         }
-      };
-      reader.readAsBinaryString(file);
+
+        report.successCount = importedStudents.length;
+
+        if (importedStudents.length === 0) {
+          report.hasFormatError = true;
+          addLog('ERROR', 'ROW_VALIDATION', 'Tidak ada data siswa yang valid (dengan nama terisi) ditemukan dalam seluruh berkas.');
+          throw new Error('Tidak ada data siswa yang valid ditemukan dalam berkas.');
+        }
+
+        // Check RBAC class visibility
+        const userAssignedClasses = getAssignedClasses(currentUser);
+        if (!userAssignedClasses.includes('*')) {
+          const rbacHidden = importedStudents.filter(s => 
+            !s.kelas || !userAssignedClasses.some(c => c.toLowerCase() === s.kelas.trim().toLowerCase())
+          ).length;
+          if (rbacHidden > 0) {
+            report.rbacFilteredCount = rbacHidden;
+            addLog('WARN', 'ROW_VALIDATION', `Perhatian Hak Akses: ${rbacHidden} siswa yang diimpor memiliki kelas yang tidak diampu oleh peran Anda (${userAssignedClasses.join(', ')}). Data siswa tersebut tetap tersimpan di database namun disembunyikan dari tabel Anda.`);
+          }
+        }
+
+        // Run preview validation
+        const validationReport = await validateStudentDataWithReport(importedStudents);
+        addLog('INFO', 'ROW_VALIDATION', `Pratinjau Kualitas Data: Skor ${validationReport.dataQualityScore}%. Lengkap: ${validationReport.validCount}, Perlu Melengkapi: ${validationReport.warningCount}, Wajib Kosong: ${validationReport.missingRequiredCount}`);
+
+        // Set pending context and open Preview Modal
+        setPendingImportContext({
+          importedStudents,
+          validationReport,
+          report,
+          fileName: file.name,
+          fileSize: (file.size / 1024).toFixed(1) + ' KB',
+          fileInput
+        });
+        setIsPreviewModalOpen(true);
+
+      } catch (err: any) {
+        report.errorCount++;
+        addLog('ERROR', 'PARSING', `Proses impor terhenti karena error: ${err?.message || err}`, err?.stack);
+        toast.error(`Gagal memproses file import: ${err.message}`);
+        setLastDiagnosticReport({ ...report });
+        setIsDiagnosticModalOpen(true);
+        fileInput.value = '';
+      }
+    };
+
+    if (isJsonFile) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsArrayBuffer(file);
     }
   };
 
@@ -902,12 +1249,13 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
             onChange={e => setFilterClass(e.target.value)}
             className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 text-slate-200 transition-all cursor-pointer"
           >
-            {!isRestrictedClass && <option value="">Semua Kelas</option>}
+            <option value="">Semua Kelas</option>
+            <option value="__unassigned__">⚠️ Tanpa Kelas / Belum Ditentukan</option>
             {uniqueClasses.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
           {role !== 'kepsek' && (
             <>
               <button onClick={downloadTemplate} className="bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-2 text-sm hover:bg-slate-700 text-slate-300 font-medium transition-colors">
@@ -915,8 +1263,18 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
               </button>
               <label className="bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl flex items-center gap-2 text-sm hover:bg-slate-700 cursor-pointer text-slate-300 font-medium transition-colors">
                 <Upload size={16} /> Import
-                <input type="file" className="hidden" accept=".xlsx, .xls" onChange={handleImport} />
+                <input type="file" className="hidden" accept=".xlsx, .xls, .csv, .json, .ods" onChange={handleImport} />
               </label>
+              {lastDiagnosticReport && (
+                <button
+                  type="button"
+                  onClick={() => setIsDiagnosticModalOpen(true)}
+                  className="bg-slate-800 border border-slate-700 px-3 py-2 rounded-xl flex items-center gap-1.5 text-xs hover:bg-slate-700 text-amber-300 font-medium transition-colors cursor-pointer"
+                  title="Lihat Detail Log Diagnosa Impor"
+                >
+                  <AlertTriangle size={15} /> Log Diagnosa
+                </button>
+              )}
             </>
           )}
           <button 
@@ -2133,6 +2491,40 @@ export default function DataSiswa({ semester, role, settings, setSettings }: { s
           document.body
         );
       })()}
+
+      {/* Import Preview Validation Modal */}
+      <ImportPreviewModal
+        isOpen={isPreviewModalOpen}
+        onClose={() => {
+          setIsPreviewModalOpen(false);
+          if (pendingImportContext?.fileInput) {
+            pendingImportContext.fileInput.value = '';
+          }
+          setPendingImportContext(null);
+          toast('Proses impor dibatalkan.', { icon: 'ℹ️' });
+        }}
+        onConfirmImport={handleFinalizeImport}
+        report={pendingImportContext?.validationReport || null}
+        fileName={pendingImportContext?.fileName || 'Berkas Impor'}
+        fileSize={pendingImportContext?.fileSize}
+      />
+
+      {/* Import Diagnostic Log Modal */}
+      <ImportDiagnosticModal
+        isOpen={isDiagnosticModalOpen}
+        onClose={() => setIsDiagnosticModalOpen(false)}
+        report={lastDiagnosticReport}
+        onRetrySync={async () => {
+          try {
+            toast.loading('Mencoba menyinkronkan ulang data ke Cloud Firebase...', { duration: 3000 });
+            await pushAllLocalDataToFirebase();
+            toast.success('Sinkronisasi ulang ke Cloud Firebase berhasil!');
+            setIsDiagnosticModalOpen(false);
+          } catch (e: any) {
+            toast.error('Gagal sinkronisasi ulang: ' + (e?.message || e));
+          }
+        }}
+      />
     </div>
   );
 }

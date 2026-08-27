@@ -11,14 +11,23 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 ) {
   return lazy(async () => {
     try {
-      return await importFn();
+      const module = await importFn();
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('chunk_reload_attempts');
+      }
+      return module;
     } catch (error) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      console.warn('[LazyWithRetry] Dynamic import failed, attempting retry...', error);
+      await new Promise((resolve) => setTimeout(resolve, 300));
       try {
         return await importFn();
       } catch (retryError) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        return await importFn();
+        if (typeof window !== 'undefined' && !sessionStorage.getItem('chunk_reload_attempts')) {
+          sessionStorage.setItem('chunk_reload_attempts', 'true');
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        }
+        throw retryError;
       }
     }
   });

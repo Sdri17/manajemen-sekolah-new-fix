@@ -9,6 +9,12 @@ function normalizeClassName(c: string): string {
 
 const DEFAULT_DUMMY_CLASSES = ['7-A', '7-B', '8-A', '8-B', '9-A', '9-B'];
 
+function isDatePatternString(c: string): boolean {
+  if (!c) return false;
+  const s = c.trim();
+  return /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(s) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}/.test(s);
+}
+
 /**
  * Merges settings.daftar_kelas and all student.kelas from IndexedDB store.students.
  * Removes duplicates (case-insensitive), excludes empty or 'Alumni'.
@@ -27,7 +33,7 @@ export async function syncAndGetClasses(): Promise<string[]> {
     await store.students.iterate((student: any) => {
       if (student && student.kelas) {
         const rawClass = normalizeClassName(student.kelas);
-        if (rawClass && rawClass.toLowerCase() !== 'alumni') {
+        if (rawClass && rawClass.toLowerCase() !== 'alumni' && !isDatePatternString(rawClass)) {
           const upper = rawClass.toUpperCase();
           studentClassCounts.set(upper, (studentClassCounts.get(upper) || 0) + 1);
           studentClasses.push(rawClass);
@@ -101,7 +107,7 @@ export function getMergedClassesFromStudents(students: any[], settingsDaftarKela
     students.forEach(s => {
       if (s && s.kelas) {
         const clean = normalizeClassName(s.kelas);
-        if (clean && clean.toLowerCase() !== 'alumni') {
+        if (clean && clean.toLowerCase() !== 'alumni' && !isDatePatternString(clean)) {
           const upper = clean.toUpperCase();
           studentClassCounts.set(upper, (studentClassCounts.get(upper) || 0) + 1);
           studentClasses.push(clean);

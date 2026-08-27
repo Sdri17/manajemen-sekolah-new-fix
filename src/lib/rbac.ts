@@ -234,7 +234,12 @@ export function filterStudentsForUser<T extends { kelas?: string }>(
   const assigned = getAssignedClasses(target);
   if (assigned.includes('*')) return students;
 
-  return students.filter(s => s.kelas && assigned.some(c => c.toLowerCase() === s.kelas?.trim().toLowerCase()));
+  return students.filter(s => {
+    if (!s.kelas || s.kelas.trim() === '' || s.kelas.trim() === '-' || s.kelas.trim().toLowerCase() === 'umum') {
+      return true; // Keep unassigned/imported students visible so user can assign them
+    }
+    return assigned.some(c => c.toLowerCase() === s.kelas?.trim().toLowerCase());
+  });
 }
 
 /**

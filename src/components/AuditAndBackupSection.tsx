@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Download, 
+  Upload,
   Search, 
   AlertTriangle, 
   Database, 
@@ -18,8 +19,12 @@ import {
   downloadComprehensiveBackup, 
   downloadAuditReportExport, 
   DeepAuditReport,
-  AuditIssue
+  AuditIssue,
+  pushAllLocalDataToFirebase
 } from '../lib/firebaseSync';
+import { parseAndNormalizeBackup } from '../lib/backupHelper';
+import { store, pauseNotifications, resumeNotifications, pauseSyncQueue, resumeSyncQueue } from '../lib/store';
+import toast from 'react-hot-toast';
 
 export default function AuditAndBackupSection() {
   const [auditReport, setAuditReport] = useState<DeepAuditReport | null>(null);
@@ -53,6 +58,156 @@ export default function AuditAndBackupSection() {
     } finally {
       setIsBackingUp(false);
     }
+  };
+
+  const handleRestoreBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const fileInput = event.target;
+    const file = fileInput.files?.[0];
+    if (!file) return;
+
+    const toastId = toast.loading('Membaca & memulihkan berkas cadangan database...', { position: 'top-right' });
+    const reader = new FileReader();
+
+    reader.onload = async (e) => {
+      try {
+        const rawJson = JSON.parse(e.target?.result as string);
+        const normalized = parseAndNormalizeBackup(rawJson);
+
+        if (!normalized) {
+          throw new Error('Format file backup tidak valid. Harus berupa file JSON backup EduSync / Firestore.');
+        }
+
+        pauseNotifications();
+        pauseSyncQueue();
+
+        const batchProcess = async <T,>(items: T[], fn: (item: T) => Promise<void>, batchSize = 200) => {
+          for (let i = 0; i < items.length; i += batchSize) {
+            const chunk = items.slice(i, i + batchSize);
+            await Promise.all(chunk.map(item => fn(item)));
+          }
+        };
+
+        let totalRestored = 0;
+        const collectionsRestored: string[] = [];
+
+        if (normalized.students && normalized.students.length > 0) {
+          await batchProcess(normalized.students, async (s) => {
+            await store.students.setItem(s.id, s);
+            await store.syncQueue.setItem(`students::${s.id}`, 'updated');
+          });
+          totalRestored += normalized.students.length;
+          collectionsRestored.push(`${normalized.students.length} Siswa`);
+        }
+
+        if (normalized.grades && normalized.grades.length > 0) {
+          await batchProcess(normalized.grades, async (g) => {
+            await store.grades.setItem(g.id, g);
+            await store.syncQueue.setItem(`grades::${g.id}`, 'updated');
+          });
+          totalRestored += normalized.grades.length;
+          collectionsRestored.push(`${normalized.grades.length} Nilai`);
+        }
+
+        if (normalized.attendance && normalized.attendance.length > 0) {
+          await batchProcess(normalized.attendance, async (a) => {
+            await store.attendance.setItem(a.id, a);
+            await store.syncQueue.setItem(`attendance::${a.id}`, 'updated');
+          });
+          totalRestored += normalized.attendance.length;
+          collectionsRestored.push(`${normalized.attendance.length} Absensi`);
+        }
+
+        if (normalized.kas && normalized.kas.length > 0) {
+          await batchProcess(normalized.kas, async (k) => {
+            await store.kas.setItem(k.id, k);
+            await store.syncQueue.setItem(`kas::${k.id}`, 'updated');
+          });
+          totalRestored += normalized.kas.length;
+          collectionsRestored.push(`${normalized.kas.length} Kas`);
+        }
+
+        if (normalized.kasLogs && normalized.kasLogs.length > 0) {
+          await batchProcess(normalized.kasLogs, async (kl) => {
+            await store.kasLogs.setItem(kl.id, kl);
+            await store.syncQueue.setItem(`kasLogs::${kl.id}`, 'updated');
+          });
+          totalRestored += normalized.kasLogs.length;
+        }
+
+        if (normalized.roster && normalized.roster.length > 0) {
+          await batchProcess(normalized.roster, async (r) => {
+            await store.roster.setItem(r.id, r);
+            await store.syncQueue.setItem(`roster::${r.id}`, 'updated');
+          });
+          totalRestored += normalized.roster.length;
+          collectionsRestored.push(`${normalized.roster.length} Jadwal`);
+        }
+
+        if (normalized.piket && normalized.piket.length > 0) {
+          await batchProcess(normalized.piket, async (p) => {
+            await store.piket.setItem(p.id, p);
+            await store.syncQueue.setItem(`piket::${p.id}`, 'updated');
+          });
+          totalRestored += normalized.piket.length;
+          collectionsRestored.push(`${normalized.piket.length} Piket`);
+        }
+
+        if (normalized.tasks && normalized.tasks.length > 0) {
+          await batchProcess(normalized.tasks, async (t) => {
+            await store.tasks.setItem(t.id, t);
+            await store.syncQueue.setItem(`tasks::${t.id}`, 'updated');
+          });
+          totalRestored += normalized.tasks.length;
+          collectionsRestored.push(`${normalized.tasks.length} Tugas`);
+        }
+
+        if (normalized.jurnal && normalized.jurnal.length > 0) {
+          await batchProcess(normalized.jurnal, async (j) => {
+            await store.jurnal.setItem(j.id, j);
+            await store.syncQueue.setItem(`jurnal::${j.id}`, 'updated');
+          });
+          totalRestored += normalized.jurnal.length;
+          collectionsRestored.push(`${normalized.jurnal.length} Jurnal`);
+        }
+
+        if (normalized.raporCapaian && normalized.raporCapaian.length > 0) {
+          await batchProcess(normalized.raporCapaian, async (rc) => {
+            await store.raporCapaian.setItem(rc.id, rc);
+            await store.syncQueue.setItem(`raporCapaian::${rc.id}`, 'updated');
+          });
+          totalRestored += normalized.raporCapaian.length;
+          collectionsRestored.push(`${normalized.raporCapaian.length} Rapor`);
+        }
+
+        if (normalized.settings) {
+          await store.settings.setItem('app_settings', normalized.settings);
+        }
+
+        resumeNotifications(true);
+        resumeSyncQueue();
+
+        window.dispatchEvent(new Event('data-changed'));
+        window.dispatchEvent(new Event('sync-status-changed'));
+
+        try {
+          await pushAllLocalDataToFirebase();
+        } catch (e) {
+          console.warn('[AuditAndBackup] Auto push to firebase on restore:', e);
+        }
+
+        runAudit();
+
+        toast.success(`Berhasil memulihkan ${totalRestored} data (${collectionsRestored.join(', ')}) ke database!`, { id: toastId, duration: 6000 });
+      } catch (err: any) {
+        toast.error('Gagal memulihkan backup: ' + (err?.message || err), { id: toastId });
+      } finally {
+        resumeNotifications(true);
+        resumeSyncQueue();
+        fileInput.value = '';
+      }
+    };
+
+    reader.readAsText(file);
   };
 
   const filteredIssues = (auditReport?.issues || []).filter(issue => {
@@ -95,6 +250,21 @@ export default function AuditAndBackupSection() {
               Pencegahan Data Loss
             </span>
           </button>
+
+          {/* Import / Restore Backup Button */}
+          <label
+            className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-700/80 hover:bg-slate-600 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold shadow-md transition-all cursor-pointer"
+            title="Unggah dan pulihkan seluruh data database dari file JSON backup"
+          >
+            <Upload size={16} />
+            <span>Import Backup JSON</span>
+            <input
+              type="file"
+              accept=".json"
+              onChange={handleRestoreBackup}
+              className="hidden"
+            />
+          </label>
 
           {/* Run Audit Button */}
           <button

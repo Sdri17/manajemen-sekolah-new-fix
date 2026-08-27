@@ -39,6 +39,8 @@ import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../context/AuthContext';
 import BackgroundDataBanner from './BackgroundDataBanner';
+import { runUsersDiagnosticAndSync } from '../lib/userDiagnostic';
+import { fetchLatestUsersFromFirebase } from '../lib/firebaseSync';
 
 interface UserManagementProps {
   role?: string;
@@ -92,17 +94,49 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
   const currentUser = getCurrentUser();
   const isAuthorizedAdmin = isUserAdmin(currentUser) || currentUser?.username === 'admin' || canManageUsers(currentUser);
 
+  const [isDiagnosticRunning, setIsDiagnosticRunning] = useState(false);
+
+  const handleRunDiagnostic = async () => {
+    setIsDiagnosticRunning(true);
+    const toastId = toast.loading('Menjalankan diagnostik & verifikasi akun pengguna (RBAC)...');
+    try {
+      const res = await runUsersDiagnosticAndSync();
+      if (res.success) {
+        toast.success(
+          `Diagnostik Selesai! Checked: ${res.totalUsersChecked} | Cloud Synced: ${res.cloudUsersSynced} | Repaired: ${res.repairedCount}`,
+          { id: toastId, duration: 4000 }
+        );
+      } else {
+        toast.error('Diagnostik selesai dengan catatan/peringatan.', { id: toastId });
+      }
+      await loadClassesAndUsers();
+    } catch (err: any) {
+      toast.error('Gagal menjalankan diagnostik: ' + (err?.message || String(err)), { id: toastId });
+    } finally {
+      setIsDiagnosticRunning(false);
+    }
+  };
+
   const loadClassesAndUsers = async () => {
     setLoading(true);
     try {
+      // 0. Sync latest user accounts from Cloud Firestore first if available
+      await fetchLatestUsersFromFirebase().catch(() => {});
+
       // 1. Load Classes from Settings merged with Student Data
       const syncedClasses = await syncAndGetClasses();
       setAvailableClasses(['Semua', ...syncedClasses]);
 
       // 2. Load Users
       const userList: AppUser[] = [];
+      const seenIds = new Set<string>();
       await store.users.iterate((u: AppUser) => {
-        userList.push(u);
+        if (!u) return;
+        const keyId = u.id || u.username;
+        if (keyId && !seenIds.has(keyId.toLowerCase())) {
+          seenIds.add(keyId.toLowerCase());
+          userList.push(u);
+        }
       });
       setUsers(userList);
     } catch (err) {
@@ -190,6 +224,7 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
 
     try {
       await store.users.setItem(newUser.id, newUser);
+      await store.users.setItem(cleanUsername, newUser);
       await store.syncQueue.setItem(`users::${newUser.id}`, 'updated');
 
       window.dispatchEvent(new Event('data-changed'));
@@ -278,6 +313,7 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
 
     try {
       await store.users.setItem(editingUser.id, updatedUser);
+      await store.users.setItem(cleanUsername, updatedUser);
       await store.syncQueue.setItem(`users::${editingUser.id}`, 'updated');
 
       window.dispatchEvent(new Event('data-changed'));
@@ -304,6 +340,9 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
 
     try {
       await store.users.removeItem(userToDelete.id);
+      if (userToDelete.username) {
+        await store.users.removeItem(userToDelete.username.toLowerCase()).catch(() => {});
+      }
       await store.syncQueue.setItem(`users::${userToDelete.id}`, 'deleted');
 
       window.dispatchEvent(new Event('data-changed'));
@@ -371,16 +410,27 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
         </div>
 
         {isAuthorizedAdmin && (
-          <button
-            onClick={() => {
-              resetAddForm();
-              setShowAddModal(true);
-            }}
-            className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-indigo-600/30 cursor-pointer shrink-0"
-          >
-            <UserPlus size={16} />
-            <span>Tambah Pengguna Baru</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleRunDiagnostic}
+              disabled={isDiagnosticRunning}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-600/20 cursor-pointer"
+              title="Periksa dan pulihkan akun admin, sinkronisasi Firestore Cloud, serta verifikasi izin RBAC"
+            >
+              <RefreshCw size={15} className={isDiagnosticRunning ? 'animate-spin' : ''} />
+              <span>Diagnostik RBAC</span>
+            </button>
+            <button
+              onClick={() => {
+                resetAddForm();
+                setShowAddModal(true);
+              }}
+              className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-indigo-600/30 cursor-pointer shrink-0"
+            >
+              <UserPlus size={16} />
+              <span>Tambah Pengguna Baru</span>
+            </button>
+          </div>
         )}
       </div>
 

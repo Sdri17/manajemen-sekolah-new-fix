@@ -305,8 +305,9 @@ function MainAppContent() {
             id: 'admin', 
             username: 'admin', 
             password: 'admin', 
-            role: 'guru', 
-            name: 'Admin Guru',
+            role: 'admin', 
+            name: 'Administrator',
+            assignedClasses: ['*'],
             pertanyaan_keamanan: 'Nama SD Pertama Anda?',
             jawaban_keamanan: 'sd',
             email_pemulihan: 'admin@edusync.id'

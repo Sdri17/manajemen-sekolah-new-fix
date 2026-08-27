@@ -13,7 +13,7 @@ import BackgroundDataBanner from '../components/BackgroundDataBanner';
 
 interface RosterPiketProps {
   semester: string;
-  role: 'guru' | 'kepsek';
+  role: string;
   settings: Settings | null;
   syncData?: () => Promise<void>;
   isSyncing?: boolean;
@@ -189,11 +189,20 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     }
   };
 
+  const matchNormalizedClass = (a?: string, b?: string): boolean => {
+    if (!a || !b) return false;
+    const cleanA = a.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const cleanB = b.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return cleanA === cleanB;
+  };
+
   const loadRoster = async () => {
     const list: RosterItem[] = [];
     const fallbackList: RosterItem[] = [];
     await store.roster.iterate<RosterItem, void>((val) => {
-      if (val.kelas === selectedClass) {
+      if (!val) return;
+      const matchClass = matchNormalizedClass(val.kelas, selectedClass);
+      if (matchClass) {
         if (val.semester === semester) {
           list.push(val);
         } else {
@@ -208,7 +217,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     const sorted = finalRoster.sort((a, b) => {
       const dayDiff = daysList.indexOf(a.hari) - daysList.indexOf(b.hari);
       if (dayDiff !== 0) return dayDiff;
-      return a.jam_mulai.localeCompare(b.jam_mulai);
+      return (a.jam_mulai || '').localeCompare(b.jam_mulai || '');
     });
     setRosterItems(sorted);
   };
@@ -217,7 +226,9 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     const list: PiketItem[] = [];
     const fallbackList: PiketItem[] = [];
     await store.piket.iterate<PiketItem, void>((val) => {
-      if (val.kelas === selectedClass) {
+      if (!val) return;
+      const matchClass = matchNormalizedClass(val.kelas, selectedClass);
+      if (matchClass) {
         if (val.semester === semester) {
           list.push(val);
         } else {
@@ -362,6 +373,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
           semester: semester
         };
         await store.roster.setItem(editingRosterId, updated);
+        await store.syncQueue.setItem(`roster::${editingRosterId}`, 'updated');
         toast.success('Jadwal pelajaran diperbarui!');
       } else {
         // Multi-JP Consecutive Slot Creation Logic with conflict pre-validation
@@ -415,6 +427,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
             semester: semester
           };
           await store.roster.setItem(newItemId, newItem);
+          await store.syncQueue.setItem(`roster::${newItemId}`, 'updated');
         }
 
         toast.success(`Berhasil menambahkan ${numJp} JP ${rosterFormData.mata_pelajaran}!`);
@@ -451,6 +464,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
 
     try {
       await store.roster.removeItem(id);
+      await store.syncQueue.setItem(`roster::${id}`, 'deleted');
       window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (e) {
@@ -488,10 +502,12 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
         semester: semester
       };
       await store.piket.setItem(id, newItem);
+      await store.syncQueue.setItem(`piket::${id}`, 'updated');
       toast.success('Petugas piket disimpan & sinkronisasi otomatis berjalan!');
       setIsPiketModalOpen(false);
       setSelectedStudentForPiket('');
       loadPiket();
+      window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (err) {
       toast.error('Gagal menambahkan jadwal piket');
@@ -506,6 +522,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
 
     try {
       await store.piket.removeItem(id);
+      await store.syncQueue.setItem(`piket::${id}`, 'deleted');
       window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (err) {
@@ -516,7 +533,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
 
   const handleGeneratePiketKolektif = async () => {
     if (!selectedClass) return;
-    const classStudents = students.filter(s => s.kelas === selectedClass);
+    const classStudents = students.filter(s => s.kelas && selectedClass && s.kelas.trim().toLowerCase() === selectedClass.trim().toLowerCase());
     if (classStudents.length === 0) {
       toast.error('Tidak ada siswa di kelas ini untuk digenerate');
       return;
@@ -526,6 +543,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
       // Clear current piket first
       for (const item of piketItems) {
         await store.piket.removeItem(item.id);
+        await store.syncQueue.setItem(`piket::${item.id}`, 'deleted');
       }
 
       const days = daysList;
@@ -549,6 +567,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
               semester: semester
             };
             await store.piket.setItem(id, newItem);
+            await store.syncQueue.setItem(`piket::${id}`, 'updated');
           }
           studentIndex++;
         }
@@ -556,6 +575,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
 
       toast.success(`Auto distribusi piket (${jumlahPiketHarian} petugas/hari) disimpan & sinkronisasi berjalan!`);
       loadPiket();
+      window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (err) {
       toast.error('Gagal melakukan distribusi piket harian');
@@ -566,9 +586,11 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     try {
       for (const item of piketItems) {
         await store.piket.removeItem(item.id);
+        await store.syncQueue.setItem(`piket::${item.id}`, 'deleted');
       }
       toast.success('Jadwal piket dibersihkan & sinkronisasi otomatis berjalan!');
       loadPiket();
+      window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (e) {
       toast.error('Gagal mereset piket');
@@ -1018,8 +1040,9 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     return 'Jakarta';
   };
 
-  const classStudents = students.filter(s => s.kelas === selectedClass);
+  const classStudents = students.filter(s => s.kelas && selectedClass && s.kelas.trim().toLowerCase() === selectedClass.trim().toLowerCase());
   const subjects = settings?.mata_pelajaran || [];
+  const canEdit = role !== 'kepsek';
 
   return (
     <div className="p-6 text-slate-200 h-full overflow-auto custom-scrollbar flex flex-col gap-6">
@@ -1091,7 +1114,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
               {/* Actions row */}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3 flex-wrap">
-                  {role === 'guru' && (
+                  {canEdit && (
                     <div className="flex gap-2 flex-wrap">
                       <button
                         onClick={() => {
@@ -1166,7 +1189,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                     />
                     <span>Sertakan Kop Surat</span>
                   </label>
-                  {role === 'guru' && syncData && (
+                  {canEdit && syncData && (
                     <button
                       onClick={async () => {
                         try {
@@ -1268,7 +1291,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                                 <td colSpan={daysList.length} className="p-3 text-center bg-indigo-500/5 text-slate-200 font-bold border-l border-slate-700/40">
                                   <div className="relative group/cell flex items-center justify-center gap-2 py-2">
                                     <span className="uppercase tracking-wider text-xs md:text-sm text-indigo-300">{firstItem.mata_pelajaran}</span>
-                                    {role === 'guru' && (
+                                    {canEdit && (
                                       <div className="opacity-0 group-hover/cell:opacity-100 flex gap-1 transition-opacity shrink-0 ml-2 bg-slate-900/90 px-1.5 py-0.5 rounded border border-slate-700">
                                         <button onClick={() => handleEditRoster(firstItem)} className="p-1 text-indigo-400 hover:text-indigo-300 transition-colors" title="Edit">
                                           <Edit2 size={12} />
@@ -1290,7 +1313,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                                           {item.guru && (
                                             <span className="text-[10px] text-slate-400 block italic mt-0.5 max-w-[110px] truncate" title={item.guru}>{item.guru}</span>
                                           )}
-                                          {role === 'guru' && (
+                                          {canEdit && (
                                             <div className="absolute -top-1 -right-1 opacity-0 group-hover/cell:opacity-100 flex gap-1 transition-opacity bg-slate-950/90 px-1 py-0.5 rounded border border-slate-700 shadow-md">
                                               <button onClick={() => handleEditRoster(item)} className="p-0.5 text-indigo-400 hover:text-indigo-300 transition-colors" title="Edit">
                                                 <Edit2 size={11} />
@@ -1348,7 +1371,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                                   </p>
                                 )}
 
-                                {role === 'guru' && (
+                                {canEdit && (
                                   <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
                                     <button onClick={() => handleEditRoster(item)} className="p-1 text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors" title="Edit">
                                       <Edit2 size={13} />
@@ -1388,7 +1411,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        disabled={role !== 'guru' || jumlahPiketHarian <= 1}
+                        disabled={!canEdit || jumlahPiketHarian <= 1}
                         onClick={() => handleUpdateJumlahPiketHarian(jumlahPiketHarian - 1)}
                         className="p-1 text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-30 cursor-pointer active:scale-95 transition-all"
                         title="Kurangi Target Piket Harian"
@@ -1399,7 +1422,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                         type="number"
                         min={1}
                         max={15}
-                        disabled={role !== 'guru'}
+                        disabled={!canEdit}
                         value={jumlahPiketHarian}
                         onChange={(e) => {
                           const val = parseInt(e.target.value, 10);
@@ -1410,7 +1433,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                       <span className="text-indigo-300 font-bold pr-0.5">Siswa / Hari</span>
                       <button
                         type="button"
-                        disabled={role !== 'guru' || jumlahPiketHarian >= 15}
+                        disabled={!canEdit || jumlahPiketHarian >= 15}
                         onClick={() => handleUpdateJumlahPiketHarian(jumlahPiketHarian + 1)}
                         className="p-1 text-slate-300 hover:text-white bg-slate-700 hover:bg-slate-600 rounded disabled:opacity-30 cursor-pointer active:scale-95 transition-all"
                         title="Tambah Target Piket Harian"
@@ -1420,7 +1443,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                     </div>
                   </div>
 
-                  {role === 'guru' && (
+                  {canEdit && (
                     <>
                       <button
                         onClick={handleGeneratePiketKolektif}
@@ -1458,7 +1481,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                     />
                     <span>Sertakan Kop Surat</span>
                   </label>
-                  {role === 'guru' && syncData && (
+                  {canEdit && syncData && (
                     <button
                       onClick={async () => {
                         try {
@@ -1499,7 +1522,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                           }`}>
                             {dayPikets.length} / {jumlahPiketHarian} Petugas
                           </span>
-                          {role === 'guru' && (
+                          {canEdit && (
                             <button
                               onClick={() => {
                                 setSelectedPiketDay(hari);
@@ -1530,7 +1553,7 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                                   </span>
                                 </div>
 
-                                {role === 'guru' && (
+                                {canEdit && (
                                   <button
                                     onClick={() => setPiketToDelete(item.id)}
                                     className="text-slate-500 hover:text-rose-400 p-1 rounded-md hover:bg-rose-500/10 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
