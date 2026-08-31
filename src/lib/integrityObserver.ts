@@ -1,5 +1,6 @@
 import { store, Student, Grade, Attendance } from './store';
 import { pushAllLocalDataToFirebase, deleteDocFromFirebase } from './firebaseSync';
+import { safeLocalStorageSetItem } from './firebase';
 
 export interface IntegrityReport {
   isValid: boolean;
@@ -151,7 +152,7 @@ export async function verifyFirestoreReferenceIntegrity(): Promise<ReferenceInte
 
   cachedRefSummary = summary;
   try {
-    localStorage.setItem('firestore_reference_integrity_report', JSON.stringify(summary));
+    safeLocalStorageSetItem('firestore_reference_integrity_report', JSON.stringify(summary));
     window.dispatchEvent(new CustomEvent('reference-integrity-updated', { detail: summary }));
   } catch (e) {
     console.warn('[IntegrityObserver] Failed to save reference integrity report', e);
@@ -301,7 +302,7 @@ export async function checkDatabaseIntegrity(): Promise<IntegrityReport> {
 
   cachedReport = report;
   try {
-    localStorage.setItem('db_integrity_report', JSON.stringify(report));
+    safeLocalStorageSetItem('db_integrity_report', JSON.stringify(report));
     window.dispatchEvent(new CustomEvent('integrity-report-updated', { detail: report }));
   } catch (e) {
     console.warn('[IntegrityObserver] Failed to save integrity report', e);

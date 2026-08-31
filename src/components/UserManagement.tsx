@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { store, AppUser, Settings, MenuPermissionLevel } from '../lib/store';
 import { syncAndGetClasses } from '../lib/classHelper';
 import { 
@@ -117,11 +117,17 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
     }
   };
 
-  const loadClassesAndUsers = async () => {
+  const isLoadingRef = useRef(false);
+
+  const loadClassesAndUsers = async (fetchRemote: boolean = true) => {
+    if (isLoadingRef.current) return;
+    isLoadingRef.current = true;
     setLoading(true);
     try {
-      // 0. Sync latest user accounts from Cloud Firestore first if available
-      await fetchLatestUsersFromFirebase().catch(() => {});
+      // 0. Sync latest user accounts from Cloud Firestore if requested
+      if (fetchRemote) {
+        await fetchLatestUsersFromFirebase(true).catch(() => {});
+      }
 
       // 1. Load Classes from Settings merged with Student Data
       const syncedClasses = await syncAndGetClasses();
@@ -144,18 +150,21 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
       toast.error('Gagal memuat data pengguna');
     } finally {
       setLoading(false);
+      isLoadingRef.current = false;
     }
   };
 
   useEffect(() => {
-    loadClassesAndUsers();
+    loadClassesAndUsers(true);
 
     const handleDataChange = () => {
-      loadClassesAndUsers();
+      loadClassesAndUsers(false);
     };
     window.addEventListener('data-changed', handleDataChange);
+    window.addEventListener('users-updated', handleDataChange);
     return () => {
       window.removeEventListener('data-changed', handleDataChange);
+      window.removeEventListener('users-updated', handleDataChange);
     };
   }, []);
 
@@ -230,6 +239,8 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
       window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('sync-status-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
+
+      await fetchLatestUsersFromFirebase(true).catch(() => {});
 
       toast.success(`Akun @${cleanUsername} (${ROLE_CONFIGS[newRole]?.label || newRole}) berhasil dibuat`);
       setShowAddModal(false);
@@ -462,7 +473,7 @@ export default function UserManagement({ role, onUserUpdated }: UserManagementPr
           </select>
 
           <button
-            onClick={loadClassesAndUsers}
+            onClick={() => loadClassesAndUsers(true)}
             className="p-2 bg-slate-900 hover:bg-slate-700 border border-slate-700 rounded-xl text-slate-300 transition-colors cursor-pointer"
             title="Segarkan Data"
           >

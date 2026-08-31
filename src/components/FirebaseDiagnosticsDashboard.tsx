@@ -35,6 +35,7 @@ import {
   SyncConflictItem
 } from '../lib/firebaseSync';
 import { activeFirebaseConfig, getActiveDatabaseId, auth, db } from '../lib/firebase';
+import SyncCountDiagnosticTool from './SyncCountDiagnosticTool';
 import toast from 'react-hot-toast';
 
 interface FirebaseDiagnosticsDashboardProps {
@@ -58,7 +59,7 @@ export default function FirebaseDiagnosticsDashboard({ onClose }: FirebaseDiagno
   // UI state
   const [copiedRules, setCopiedRules] = useState(false);
   const [solutionType, setSolutionType] = useState<'firestore' | 'sql'>('firestore');
-  const [activeTab, setActiveTab] = useState<'overview' | 'diagnostics' | 'siswa-rules' | 'solution'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'diagnostics' | 'siswa-rules' | 'solution' | 'count-diagnostic'>('overview');
   const [conflicts, setConflicts] = useState<SyncConflictItem[]>([]);
 
   // Check services status on mount
@@ -313,9 +314,25 @@ export default function FirebaseDiagnosticsDashboard({ onClose }: FirebaseDiagno
           <ShieldCheck size={14} />
           <span>Solusi Kode Rules</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab('count-diagnostic')}
+          className={`py-2.5 px-4 text-xs font-bold rounded-t-xl transition-all cursor-pointer flex items-center gap-2 border-t border-x ${
+            activeTab === 'count-diagnostic'
+              ? 'bg-slate-900 text-indigo-400 border-slate-700 shadow-md'
+              : 'text-slate-400 hover:text-slate-200 border-transparent'
+          }`}
+        >
+          <GitCompare size={14} />
+          <span>Analisis Record & Access Control</span>
+        </button>
       </div>
 
       <div className="p-6 space-y-6">
+        {/* TAB 5: COUNT DIAGNOSTIC & ACCESS CONTROL SIMULATION */}
+        {activeTab === 'count-diagnostic' && (
+          <SyncCountDiagnosticTool />
+        )}
         {/* TAB 1: OVERVIEW SERVICES & PARAMETERS */}
         {activeTab === 'overview' && (
           <div className="space-y-6">

@@ -13,18 +13,22 @@ import defaultConfig from '../../firebase-applet-config.json';
 // Silence internal SDK logs to prevent 10s backend connection timeout warning noise
 setLogLevel('silent');
 
-// Safely clear any legacy or bloated Firestore storage keys from localStorage to prevent QuotaExceededError
-if (typeof window !== 'undefined' && window.localStorage) {
+// Safely clear any legacy or bloated Firestore internal storage keys from localStorage to prevent QuotaExceededError
+export function purgeFirestoreLocalStorageCache(): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && (
-        key.startsWith('firestore_targets') || 
-        key.startsWith('firestore_mutations') || 
-        key.startsWith('firestore_z_')
-      )) {
-        keysToRemove.push(key);
+      if (key) {
+        // Purge internal firestore SDK state keys, large reports, and legacy backup snapshots
+        if (
+          (key.startsWith('firestore') && key !== 'active_firestore_database_id' && key !== 'custom_firebase_config') ||
+          key.startsWith('ClassApp_') ||
+          key.includes('integrity_report')
+        ) {
+          keysToRemove.push(key);
+        }
       }
     }
     keysToRemove.forEach(k => {
@@ -37,15 +41,25 @@ if (typeof window !== 'undefined' && window.localStorage) {
   }
 }
 
+// Run cleanup immediately on module load
+purgeFirestoreLocalStorageCache();
+
 /**
  * Safe helper for localStorage.setItem to swallow QuotaExceededError gracefully
+ * and purge obsolete internal cache if quota is reached.
  */
 export function safeLocalStorageSetItem(key: string, value: string): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     localStorage.setItem(key, value);
   } catch (err) {
-    console.warn(`[localStorage] Quota exceeded or error writing key "${key}":`, err);
+    console.warn(`[localStorage] Quota exceeded writing key "${key}". Purging Firestore internal cache...`, err);
+    purgeFirestoreLocalStorageCache();
+    try {
+      localStorage.setItem(key, value);
+    } catch (_retryErr) {
+      // Ignore fallback failure if storage is completely full
+    }
   }
 }
 

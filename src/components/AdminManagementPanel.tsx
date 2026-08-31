@@ -2,14 +2,17 @@ import React, { useState } from 'react';
 import UserManagement from './UserManagement';
 import ClassManagement from './ClassManagement';
 import SystemAuditLogViewer from './SystemAuditLogViewer';
-import { Users, Activity, ShieldCheck, Lock, Layers } from 'lucide-react';
+import EventAuditLogViewer from './EventAuditLogViewer';
+import SyncCountDiagnosticTool from './SyncCountDiagnosticTool';
+import RolePermissionInspector from './RolePermissionInspector';
+import { Users, Activity, ShieldCheck, Lock, Layers, GitCompare, History, UserCheck } from 'lucide-react';
 import { isUserAdmin, canManageUsers, getCurrentUser } from '../lib/rbac';
 import { AppUser } from '../lib/store';
 
 interface AdminManagementPanelProps {
   currentUser?: AppUser | null;
   onUserUpdated?: () => void;
-  defaultTab?: 'users' | 'classes' | 'logs';
+  defaultTab?: 'users' | 'classes' | 'logs' | 'event-audit' | 'diagnostics';
 }
 
 export default function AdminManagementPanel({ 
@@ -17,7 +20,7 @@ export default function AdminManagementPanel({
   onUserUpdated, 
   defaultTab = 'users' 
 }: AdminManagementPanelProps) {
-  const [activeTab, setActiveTab] = useState<'users' | 'classes' | 'logs'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<'users' | 'classes' | 'logs' | 'event-audit' | 'diagnostics'>(defaultTab);
 
   const user: AppUser | null = currentUser || getCurrentUser();
   const isAuthorized = isUserAdmin(user) || canManageUsers(user);
@@ -84,6 +87,18 @@ export default function AdminManagementPanel({
           </button>
 
           <button
+            onClick={() => setActiveTab('event-audit')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              activeTab === 'event-audit'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <History size={15} />
+            <span>Event Audit</span>
+          </button>
+
+          <button
             onClick={() => setActiveTab('logs')}
             className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
               activeTab === 'logs'
@@ -92,7 +107,19 @@ export default function AdminManagementPanel({
             }`}
           >
             <Activity size={15} />
-            <span>Audit Log</span>
+            <span>Audit Log Sistem</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('diagnostics')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+              activeTab === 'diagnostics'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <GitCompare size={15} />
+            <span>Diagnostik & Inspector</span>
           </button>
         </div>
       </div>
@@ -106,8 +133,19 @@ export default function AdminManagementPanel({
         <ClassManagement />
       )}
 
+      {activeTab === 'event-audit' && (
+        <EventAuditLogViewer />
+      )}
+
       {activeTab === 'logs' && (
         <SystemAuditLogViewer />
+      )}
+
+      {activeTab === 'diagnostics' && (
+        <div className="space-y-8">
+          <RolePermissionInspector />
+          <SyncCountDiagnosticTool />
+        </div>
       )}
     </div>
   );

@@ -1,5 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { store, SchoolSettings, Settings } from '../lib/store';
+import { db } from '../lib/firebase';
+import { getTenantCollectionName } from '../lib/firebaseSync';
+import { collection, query, where, getDocs, getDocsFromServer, DocumentData } from 'firebase/firestore';
 
 export const defaultSchoolSettings: SchoolSettings = {
   id: 'global',
@@ -22,11 +25,96 @@ export const defaultSchoolSettings: SchoolSettings = {
   semester_aktif: 'Ganjil'
 };
 
+export interface RetryOptions {
+  maxRetries?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  backoffFactor?: number;
+}
+
+/**
+ * Robust helper executing Firestore `where` queries with Exponential Backoff retry strategy.
+ * If network issues or transient errors occur, it retries with increasing delay up to `maxRetries`.
+ * If all retries fail, it falls back to local IndexedDB store matching records seamlessly.
+ */
+export async function executeFirestoreWhereQueryWithRetry<T = any>(
+  collectionName: string,
+  fieldName: string,
+  value: any,
+  options: RetryOptions = {}
+): Promise<T[]> {
+  const {
+    maxRetries = 4,
+    initialDelayMs = 400,
+    maxDelayMs = 4000,
+    backoffFactor = 2
+  } = options;
+
+  const tenantColName = getTenantCollectionName(collectionName);
+  let attempt = 0;
+  let lastError: any = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      const colRef = collection(db, tenantColName);
+      const q = query(colRef, where(fieldName, '==', value));
+      const snap = await getDocsFromServer(q).catch(() => getDocs(q));
+
+      const results: T[] = [];
+      if (snap && !snap.empty) {
+        snap.docs.forEach((d) => {
+          results.push({ id: d.id, ...d.data() } as T);
+        });
+      }
+      return results;
+    } catch (err: any) {
+      lastError = err;
+      attempt++;
+      if (attempt > maxRetries) {
+        console.warn(`[SchoolProvider] Firestore where query '${tenantColName}' (${fieldName} == ${value}) failed after ${maxRetries} retries:`, err);
+        break;
+      }
+      const delay = Math.min(maxDelayMs, initialDelayMs * Math.pow(backoffFactor, attempt - 1) + Math.random() * 200);
+      console.log(`[SchoolProvider Retry] Query '${tenantColName}' failed (Attempt ${attempt}/${maxRetries}). Retrying in ${Math.round(delay)}ms...`);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+
+  // Fallback to local IndexedDB store if remote query failed completely
+  try {
+    const storeInstance = (store as any)[collectionName] || (store as any).students;
+    if (storeInstance) {
+      const localResults: T[] = [];
+      await storeInstance.iterate((val: any) => {
+        if (val && String(val[fieldName] || '').trim().toLowerCase() === String(value).trim().toLowerCase()) {
+          localResults.push(val as T);
+        }
+      });
+      return localResults;
+    }
+  } catch (localErr) {
+    console.warn(`[SchoolProvider] Local fallback for '${collectionName}' also failed:`, localErr);
+  }
+
+  return [];
+}
+
 interface SchoolContextType {
   schoolInfo: SchoolSettings;
   updateSchoolInfo: (updates: Partial<SchoolSettings>) => Promise<void>;
   isLoading: boolean;
   refreshSchoolInfo: () => Promise<void>;
+  executeFirestoreWhereQueryWithRetry: <T = any>(
+    collectionName: string,
+    fieldName: string,
+    value: any,
+    options?: RetryOptions
+  ) => Promise<T[]>;
+  fetchClassFilteredRecordsWithRetry: <T = any>(
+    collectionName: string,
+    classId: string,
+    options?: RetryOptions
+  ) => Promise<T[]>;
 }
 
 const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
@@ -34,6 +122,14 @@ const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
 export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [schoolInfo, setSchoolInfo] = useState<SchoolSettings>(defaultSchoolSettings);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+
+  const fetchClassFilteredRecordsWithRetry = useCallback(async <T = any>(
+    collectionName: string,
+    classId: string,
+    options?: RetryOptions
+  ): Promise<T[]> => {
+    return await executeFirestoreWhereQueryWithRetry<T>(collectionName, 'kelas', classId, options);
+  }, []);
 
   const refreshSchoolInfo = useCallback(async () => {
     try {
@@ -120,7 +216,16 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [refreshSchoolInfo]);
 
   return (
-    <SchoolContext.Provider value={{ schoolInfo, updateSchoolInfo, isLoading, refreshSchoolInfo }}>
+    <SchoolContext.Provider 
+      value={{ 
+        schoolInfo, 
+        updateSchoolInfo, 
+        isLoading, 
+        refreshSchoolInfo,
+        executeFirestoreWhereQueryWithRetry,
+        fetchClassFilteredRecordsWithRetry
+      }}
+    >
       {children}
     </SchoolContext.Provider>
   );

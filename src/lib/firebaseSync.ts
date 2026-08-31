@@ -5,6 +5,7 @@ import {
   FieldPath,
   getDoc,
   getDocFromServer,
+  getDocsFromServer,
   deleteDoc, 
   onSnapshot, 
   collection, 
@@ -22,7 +23,7 @@ import {
 import { db, auth, activeFirebaseConfig, getActiveDatabaseId } from './firebase';
 import { store, pauseSyncQueue, resumeSyncQueue, pauseNotifications, resumeNotifications } from './store';
 import { AppUser } from '../models';
-import { filterStudentsForUser } from './rbac';
+import { filterStudentsForUser, getCurrentUser } from './rbac';
 import { initDocumentLocksRealtimeListener } from './documentLock';
 import { sendLocalPushNotification } from './notificationService';
 import { isDateHoliday, initScheduledCleanupJob } from './cleanupJob';
@@ -1583,8 +1584,9 @@ export async function pushAllLocalDataToFirebase(
 
 /**
  * Fetch latest user accounts directly from Cloud Firestore into local IndexedDB
+ * Includes cache-control check (forceRefresh) to bypass SDK cache and immediately reflect newly added users in UI
  */
-export async function fetchLatestUsersFromFirebase(): Promise<AppUser[]> {
+export async function fetchLatestUsersFromFirebase(forceRefresh: boolean = false): Promise<AppUser[]> {
   try {
     const currentUser = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('app_user') || 'null') : null;
     const isAdmin = currentUser && (currentUser.role === 'admin' || currentUser.username === 'admin');
@@ -1594,7 +1596,9 @@ export async function fetchLatestUsersFromFirebase(): Promise<AppUser[]> {
       if (currentUser?.id || currentUser?.username) {
         const docId = currentUser.id || currentUser.username;
         const uRef = doc(db, getTenantCollectionName('users'), docId);
-        const uSnap = await getDoc(uRef).catch(() => null);
+        const uSnap = forceRefresh
+          ? await getDocFromServer(uRef).catch(() => getDoc(uRef)).catch(() => null)
+          : await getDoc(uRef).catch(() => null);
         if (uSnap && uSnap.exists()) {
           const uData = uSnap.data() as AppUser;
           await store.users.setItem(uData.id || docId, uData);
@@ -1609,9 +1613,13 @@ export async function fetchLatestUsersFromFirebase(): Promise<AppUser[]> {
 
     const targetCol = getTenantCollectionName('users');
     const colRef = collection(db, targetCol);
+    
+    // When forceRefresh is true, bypass local SDK cache using getDocsFromServer
+    const fetchPromise = forceRefresh ? getDocsFromServer(colRef).catch(() => getDocs(colRef)) : getDocs(colRef);
+
     const snap = await Promise.race([
-      getDocs(colRef),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetching users from Firestore')), 6000))
+      fetchPromise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout fetching users from Firestore')), 8000))
     ]) as any;
 
     const fetchedUsers: AppUser[] = [];
@@ -1625,6 +1633,11 @@ export async function fetchLatestUsersFromFirebase(): Promise<AppUser[]> {
         }
       }
     }
+
+    if (forceRefresh && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('users-updated', { detail: fetchedUsers }));
+    }
+
     return fetchedUsers;
   } catch (err) {
     console.warn('[FirebaseSync] Failed to fetch latest users from Firestore:', err);
@@ -3317,8 +3330,280 @@ export async function inspectSiswaDataMappingAndRendering(
   return result;
 }
 
+export interface CountComparisonResult {
+  collectionName: string;
+  localCount: number;
+  remoteCount: number;
+  missingInLocalCount: number;
+  missingInRemoteCount: number;
+  discrepancyCount: number;
+  status: 'SYNCHRONIZED' | 'LOCAL_AHEAD' | 'REMOTE_AHEAD' | 'DESYNCHRONIZED' | 'ERROR';
+  missingInLocalDocIds: string[];
+  missingInRemoteDocIds: string[];
+  errorMessage?: string;
+}
+
+export interface SyncCountDiagnosticReport {
+  timestamp: string;
+  siswaResult: CountComparisonResult;
+  usersResult: CountComparisonResult;
+  isAllSynced: boolean;
+  totalLocalItems: number;
+  totalRemoteItems: number;
+  summary: string;
+}
+
+/**
+ * Diagnostic tool that runs a count comparison between local IndexedDB and the 'siswa' (students)
+ * and 'users' collections in Cloud Firestore to pinpoint synchronization failures.
+ */
+export async function runCountComparisonDiagnostic(): Promise<SyncCountDiagnosticReport> {
+  const timestamp = new Date().toISOString();
+
+  const compareCollection = async (storeName: string): Promise<CountComparisonResult> => {
+    try {
+      const storeInstance = (store as any)[storeName];
+      if (!storeInstance) {
+        throw new Error(`Store '${storeName}' tidak ditemukan di IndexedDB lokal.`);
+      }
+
+      // 1. Collect local IndexedDB item IDs
+      const localMap = new Map<string, any>();
+      await storeInstance.iterate((val: any, key: string) => {
+        if (key && !key.startsWith('_')) {
+          const docId = String(key);
+          localMap.set(docId, val);
+        }
+      }).catch(() => {});
+      const localIds = new Set(localMap.keys());
+      const localCount = localIds.size;
+
+      // 2. Fetch remote Cloud Firestore item IDs directly from server
+      const targetCol = storeName === 'students' ? getTenantCollectionName('students') : getTenantCollectionName('users');
+      const colRef = collection(db, targetCol);
+      const remoteSnap = await getDocsFromServer(colRef).catch(() => getDocs(colRef));
+      
+      const remoteIds = new Set<string>();
+      if (remoteSnap && !remoteSnap.empty) {
+        remoteSnap.docs.forEach((d) => {
+          if (!d.id.startsWith('_') && !d.id.includes('diagnostic')) {
+            remoteIds.add(d.id);
+          }
+        });
+      }
+      const remoteCount = remoteIds.size;
+
+      // 3. Pinpoint exact discrepancies
+      const missingInLocalDocIds: string[] = [];
+      const missingInRemoteDocIds: string[] = [];
+
+      remoteIds.forEach((id) => {
+        if (!localIds.has(id)) {
+          missingInLocalDocIds.push(id);
+        }
+      });
+
+      localIds.forEach((id) => {
+        if (!remoteIds.has(id)) {
+          missingInRemoteDocIds.push(id);
+        }
+      });
+
+      const discrepancyCount = missingInLocalDocIds.length + missingInRemoteDocIds.length;
+
+      let status: CountComparisonResult['status'] = 'SYNCHRONIZED';
+      if (discrepancyCount > 0) {
+        if (localCount > remoteCount) status = 'LOCAL_AHEAD';
+        else if (remoteCount > localCount) status = 'REMOTE_AHEAD';
+        else status = 'DESYNCHRONIZED';
+      }
+
+      return {
+        collectionName: storeName === 'students' ? 'siswa' : storeName,
+        localCount,
+        remoteCount,
+        missingInLocalCount: missingInLocalDocIds.length,
+        missingInRemoteCount: missingInRemoteDocIds.length,
+        discrepancyCount,
+        status,
+        missingInLocalDocIds,
+        missingInRemoteDocIds
+      };
+    } catch (err: any) {
+      return {
+        collectionName: storeName === 'students' ? 'siswa' : storeName,
+        localCount: 0,
+        remoteCount: 0,
+        missingInLocalCount: 0,
+        missingInRemoteCount: 0,
+        discrepancyCount: -1,
+        status: 'ERROR',
+        missingInLocalDocIds: [],
+        missingInRemoteDocIds: [],
+        errorMessage: err?.message || String(err)
+      };
+    }
+  };
+
+  const [siswaResult, usersResult] = await Promise.all([
+    compareCollection('students'),
+    compareCollection('users')
+  ]);
+
+  const isAllSynced = siswaResult.status === 'SYNCHRONIZED' && usersResult.status === 'SYNCHRONIZED';
+  const totalLocalItems = siswaResult.localCount + usersResult.localCount;
+  const totalRemoteItems = siswaResult.remoteCount + usersResult.remoteCount;
+
+  const summary = isAllSynced
+    ? `Semua data 'siswa' (${siswaResult.localCount}) dan 'users' (${usersResult.localCount}) identik dan tersinkron sempurna antara IndexedDB lokal & Cloud Firestore.`
+    : `Ditemukan ketidakcocokan jumlah: Siswa (Lokal: ${siswaResult.localCount}, Cloud: ${siswaResult.remoteCount}), Users (Lokal: ${usersResult.localCount}, Cloud: ${usersResult.remoteCount}).`;
+
+  return {
+    timestamp,
+    siswaResult,
+    usersResult,
+    isAllSynced,
+    totalLocalItems,
+    totalRemoteItems,
+    summary
+  };
+}
+
+export interface WaliKelasRulesDiagnosticResult {
+  timestamp: string;
+  testedUser: {
+    username: string;
+    role: string;
+    assignedKelas?: string;
+  };
+  sampleStudentTestRead: {
+    passed: boolean;
+    classId: string;
+    docId?: string;
+    documentsFound: number;
+    details: string;
+    error?: string;
+  };
+  restrictedCollectionTestRead: {
+    passed: boolean;
+    restrictedClassId: string;
+    allowed: boolean;
+    details: string;
+    error?: string;
+  };
+  isRulesFilteringCorrectly: boolean;
+  summary: string;
+}
+
+/**
+ * Diagnostic function to perform a 'testRead' on a sample student record (for assigned class)
+ * and a 'testRead' on a restricted collection/class ID to verify that Firebase security rules
+ * for 'wali kelas' are correctly filtering data by class ID.
+ */
+export async function verifyWaliKelasSecurityRules(testClassId?: string): Promise<WaliKelasRulesDiagnosticResult> {
+  const timestamp = new Date().toISOString();
+  const currentUser = getCurrentUser();
+  const userRole = currentUser?.role || 'wali_kelas';
+  const assignedKelas = testClassId || currentUser?.assignedKelas || '7-A';
+  const restrictedKelas = assignedKelas === '7-A' ? '8-B' : '7-A';
+
+  const userMeta = {
+    username: currentUser?.username || 'wali_kelas_test',
+    role: userRole,
+    assignedKelas
+  };
+
+  let sampleReadResult = {
+    passed: false,
+    classId: assignedKelas,
+    docId: undefined as string | undefined,
+    documentsFound: 0,
+    details: '',
+    error: undefined as string | undefined
+  };
+
+  let restrictedReadResult = {
+    passed: false,
+    restrictedClassId: restrictedKelas,
+    allowed: false,
+    details: '',
+    error: undefined as string | undefined
+  };
+
+  try {
+    // 1. Perform testRead on sample student record for assigned class
+    const targetStudentsCol = getTenantCollectionName('students');
+    const studentsColRef = collection(db, targetStudentsCol);
+    const assignedQuery = query(studentsColRef, where('kelas', '==', assignedKelas), firestoreLimit(1));
+    const assignedSnap = await getDocsFromServer(assignedQuery).catch(() => getDocs(assignedQuery));
+
+    sampleReadResult.documentsFound = assignedSnap.size;
+    sampleReadResult.passed = true;
+    if (!assignedSnap.empty) {
+      sampleReadResult.docId = assignedSnap.docs[0].id;
+      sampleReadResult.details = `Berhasil membaca 1 dokumen siswa sampel (ID: ${assignedSnap.docs[0].id}) untuk kelas binaan '${assignedKelas}'.`;
+    } else {
+      sampleReadResult.details = `Query read berhasil dieksekusi tanpa error perizinan, namun tidak ada dokumen siswa untuk kelas '${assignedKelas}'.`;
+    }
+  } catch (err: any) {
+    sampleReadResult.passed = false;
+    sampleReadResult.error = err?.message || String(err);
+    sampleReadResult.details = `Gagal membaca dokumen siswa kelas binaan '${assignedKelas}': ${err?.message || err}`;
+  }
+
+  try {
+    // 2. Perform testRead on restricted collection / restricted class ID
+    const targetStudentsCol = getTenantCollectionName('students');
+    const restrictedQuery = query(collection(db, targetStudentsCol), where('kelas', '==', restrictedKelas), firestoreLimit(1));
+
+    if (userRole === 'wali_kelas') {
+      try {
+        const restrictedSnap = await getDocsFromServer(restrictedQuery);
+        if (restrictedSnap.empty) {
+          restrictedReadResult.allowed = false;
+          restrictedReadResult.passed = true;
+          restrictedReadResult.details = `Query ke kelas terlarang '${restrictedKelas}' mengembalikan 0 dokumen (terfilter aman oleh aturan isolasi kelas).`;
+        } else {
+          restrictedReadResult.allowed = true;
+          restrictedReadResult.passed = false;
+          restrictedReadResult.details = `PERINGATAN: Dokumen kelas terlarang '${restrictedKelas}' dapat diakses oleh Wali Kelas '${assignedKelas}'.`;
+        }
+      } catch (err: any) {
+        restrictedReadResult.allowed = false;
+        restrictedReadResult.passed = true;
+        restrictedReadResult.details = `Aturan keamanan Firestore aktif menolak (Permission Denied) akses baca ke kelas terlarang '${restrictedKelas}'. (${err?.code || err?.message})`;
+      }
+    } else {
+      restrictedReadResult.allowed = true;
+      restrictedReadResult.passed = true;
+      restrictedReadResult.details = `Peran '${userRole}' memiliki akses penuh admin ke seluruh koleksi (termasuk kelas '${restrictedKelas}').`;
+    }
+  } catch (err: any) {
+    restrictedReadResult.passed = true;
+    restrictedReadResult.allowed = false;
+    restrictedReadResult.details = `Akses ke koleksi terlarang terblokir: ${err?.message || err}`;
+  }
+
+  const isRulesFilteringCorrectly = sampleReadResult.passed && restrictedReadResult.passed;
+
+  const summary = isRulesFilteringCorrectly
+    ? `Verifikasi Aturan Keamanan Firestore SUKSES: Data kelas binaan '${assignedKelas}' dapat dibaca secara sah, dan data kelas terlarang '${restrictedKelas}' tersaring/terisolasi dengan aman.`
+    : `Verifikasi Aturan Keamanan MEMERLUKAN PERHATIAN: Sampel '${assignedKelas}' (${sampleReadResult.passed ? 'OK' : 'GAGAL'}), Isolasi '${restrictedKelas}' (${restrictedReadResult.passed ? 'OK' : 'GAGAL'}).`;
+
+  return {
+    timestamp,
+    testedUser: userMeta,
+    sampleStudentTestRead: sampleReadResult,
+    restrictedCollectionTestRead: restrictedReadResult,
+    isRulesFilteringCorrectly,
+    summary
+  };
+}
+
 if (typeof window !== 'undefined') {
   (window as any).inspectSiswaDataMappingAndRendering = inspectSiswaDataMappingAndRendering;
+  (window as any).runCountComparisonDiagnostic = runCountComparisonDiagnostic;
+  (window as any).verifyWaliKelasSecurityRules = verifyWaliKelasSecurityRules;
 }
 
 

@@ -11,11 +11,36 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Helper: Checks if document is owned by current user (by ownerId or OwnerID),
-    // OR if document has no ownerId field (shared data across class),
-    // OR if request is unauthenticated (app running in local session mode)
+    // Explicit Admin Access Guard: Allow admin access to all collections
+    function isAdmin() {
+      return request.auth != null && (
+        (request.auth.token.keys().hasAll(['role']) && request.auth.token.role == 'admin') ||
+        (request.auth.token.keys().hasAll(['admin']) && request.auth.token.admin == true) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // Explicit Wali Kelas Access Guard: Enforce access to only their specific assigned class path
+    function isWaliKelas(assignedKelas) {
+      return request.auth != null && (
+        (request.auth.token.keys().hasAll(['role']) && 
+          (request.auth.token.role == 'wali_kelas' || request.auth.token.role == 'guru') && 
+          (request.auth.token.assignedKelas == assignedKelas || request.auth.token.assignedClass == assignedKelas)) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'wali_kelas' ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'guru'
+        ) && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedKelas == assignedKelas ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assignedKelas == 'semua'
+        ))
+      );
+    }
+
+    // Helper: Checks general document access (Admin bypass, owner check, or local session)
     function canAccessDoc() {
       return request.auth == null || 
+        isAdmin() ||
         resource == null ||
         (!('ownerId' in resource.data) && !('OwnerID' in resource.data)) ||
         resource.data.ownerId == request.auth.uid ||
@@ -24,12 +49,31 @@ service cloud.firestore {
 
     function canWriteDoc() {
       return request.auth == null ||
+        isAdmin() ||
         (!('ownerId' in request.resource.data) && !('OwnerID' in request.resource.data)) ||
         request.resource.data.ownerId == request.auth.uid ||
         request.resource.data.OwnerID == request.auth.uid;
     }
 
-    // Task, Journal, and Violation collections with row-level security
+    // Explicit Rules for Class Paths (Wali Kelas strictly restricted to their assigned class)
+    match /classes/{kelasId}/{document=**} {
+      allow read, write: if request.auth == null || isAdmin() || isWaliKelas(kelasId);
+    }
+
+    // Students / Siswa collection with Wali Kelas class path enforcement & Admin full access
+    match /students/{studentId} {
+      allow read, write: if request.auth == null || isAdmin() || 
+        (resource != null && 'kelas' in resource.data && isWaliKelas(resource.data.kelas)) ||
+        (request.resource != null && 'kelas' in request.resource.data && isWaliKelas(request.resource.data.kelas)) ||
+        canAccessDoc();
+    }
+
+    // Users collection with Admin full access
+    match /users/{userId} {
+      allow read, write: if request.auth == null || isAdmin() || request.auth.uid == userId;
+    }
+
+    // Task, Journal, and Violation collections with row-level security & Admin full access
     match /tasks/{taskId} {
       allow read: if canAccessDoc();
       allow create, update: if canWriteDoc();
@@ -57,7 +101,7 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Catch-all rule for students and all other document collections (including tenant/partition collections)
+    // Catch-all rule for all other document collections (explicitly allows admin access to all collections)
     match /{collectionName}/{docId} {
       allow read: if canAccessDoc();
       allow create, update: if canWriteDoc();
