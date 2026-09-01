@@ -1,8 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { store, SchoolSettings, Settings } from '../lib/store';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { store, SchoolSettings, Settings, Student } from '../lib/store';
 import { db } from '../lib/firebase';
 import { getTenantCollectionName } from '../lib/firebaseSync';
-import { collection, query, where, getDocs, getDocsFromServer, DocumentData } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDocsFromServer, onSnapshot, Unsubscribe, DocumentData } from 'firebase/firestore';
 
 export const defaultSchoolSettings: SchoolSettings = {
   id: 'global',
@@ -99,6 +99,8 @@ export async function executeFirestoreWhereQueryWithRetry<T = any>(
   return [];
 }
 
+export type FirestoreStreamStatus = 'IDLE' | 'CONNECTING' | 'ACTIVE' | 'ERROR';
+
 interface SchoolContextType {
   schoolInfo: SchoolSettings;
   updateSchoolInfo: (updates: Partial<SchoolSettings>) => Promise<void>;
@@ -115,6 +117,9 @@ interface SchoolContextType {
     classId: string,
     options?: RetryOptions
   ) => Promise<T[]>;
+  streamStatus: FirestoreStreamStatus;
+  lastStreamUpdate: Date | null;
+  subscribeToStudentRecordsStream: (assignedClasses: string[]) => () => void;
 }
 
 const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
@@ -122,6 +127,10 @@ const SchoolContext = createContext<SchoolContextType | undefined>(undefined);
 export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [schoolInfo, setSchoolInfo] = useState<SchoolSettings>(defaultSchoolSettings);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [streamStatus, setStreamStatus] = useState<FirestoreStreamStatus>('IDLE');
+  const [lastStreamUpdate, setLastStreamUpdate] = useState<Date | null>(null);
+
+  const activeUnsubscribersRef = useRef<Unsubscribe[]>([]);
 
   const fetchClassFilteredRecordsWithRetry = useCallback(async <T = any>(
     collectionName: string,
@@ -131,11 +140,76 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return await executeFirestoreWhereQueryWithRetry<T>(collectionName, 'kelas', classId, options);
   }, []);
 
+  /**
+   * Listener-based 'Firestore Subscription Manager' that attaches real-time snapshot listeners
+   * to student records filtered by assigned classes. Replaces polling/manual sync with stream updates.
+   */
+  const subscribeToStudentRecordsStream = useCallback((assignedClasses: string[]) => {
+    // Clean up existing listeners
+    activeUnsubscribersRef.current.forEach(unsub => unsub());
+    activeUnsubscribersRef.current = [];
+
+    setStreamStatus('CONNECTING');
+    const tenantColName = getTenantCollectionName('students');
+    const colRef = collection(db, tenantColName);
+
+    const isUnrestricted = assignedClasses.includes('*') || assignedClasses.length === 0;
+
+    try {
+      const q = isUnrestricted
+        ? query(colRef)
+        : assignedClasses.length <= 10
+        ? query(colRef, where('kelas', 'in', assignedClasses))
+        : query(colRef); // Firestore 'in' query limit is 10, fallback to full stream if >10
+
+      const unsubscribe = onSnapshot(
+        q,
+        async (snapshot) => {
+          setStreamStatus('ACTIVE');
+          setLastStreamUpdate(new Date());
+
+          let updateCount = 0;
+          for (const change of snapshot.docChanges()) {
+            const data = change.doc.data() as Student;
+            const docId = change.doc.id;
+
+            if (change.type === 'added' || change.type === 'modified') {
+              await store.students.setItem(docId, { id: docId, ...data }).catch(() => {});
+              updateCount++;
+            } else if (change.type === 'removed') {
+              await store.students.removeItem(docId).catch(() => {});
+              updateCount++;
+            }
+          }
+
+          if (updateCount > 0) {
+            console.log(`[Firestore Subscription Manager] Stream update received (${updateCount} changes)`);
+            window.dispatchEvent(new CustomEvent('delta-data-changed', { detail: { storeName: 'students' } }));
+          }
+        },
+        (error) => {
+          console.warn('[Firestore Subscription Manager] Stream listener error:', error);
+          setStreamStatus('ERROR');
+        }
+      );
+
+      activeUnsubscribersRef.current.push(unsubscribe);
+
+      return () => {
+        unsubscribe();
+        setStreamStatus('IDLE');
+      };
+    } catch (err) {
+      console.warn('[Firestore Subscription Manager] Failed to attach stream listener:', err);
+      setStreamStatus('ERROR');
+      return () => {};
+    }
+  }, []);
+
   const refreshSchoolInfo = useCallback(async () => {
     try {
       let saved = await store.school_settings.getItem<SchoolSettings>('global');
       if (!saved) {
-        // Fallback to legacy settings if school_settings is not populated yet
         const appSet = await store.settings.getItem<Settings>('app_settings');
         if (appSet && appSet.nama_sekolah) {
           saved = {
@@ -178,7 +252,6 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setSchoolInfo(updated);
     await store.school_settings.setItem('global', updated);
 
-    // Also sync key identity fields back to app_settings for backward compatibility
     const currentSet = await store.settings.getItem<Settings>('app_settings') || {} as any;
     await store.settings.setItem('app_settings', {
       ...currentSet,
@@ -212,6 +285,7 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       window.removeEventListener('data-changed', handleDataChange);
       window.removeEventListener('delta-data-changed', handleDataChange);
       window.removeEventListener('sync-status-changed', handleDataChange);
+      activeUnsubscribersRef.current.forEach(u => u());
     };
   }, [refreshSchoolInfo]);
 
@@ -223,7 +297,10 @@ export const SchoolProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         isLoading, 
         refreshSchoolInfo,
         executeFirestoreWhereQueryWithRetry,
-        fetchClassFilteredRecordsWithRetry
+        fetchClassFilteredRecordsWithRetry,
+        streamStatus,
+        lastStreamUpdate,
+        subscribeToStudentRecordsStream
       }}
     >
       {children}

@@ -1165,9 +1165,112 @@ export async function purgeStudentDataFromFirebase(): Promise<{ success: boolean
 }
 
 /**
- * Maximum write operations per Firestore WriteBatch (Firestore API limit is 500)
+ * Sync Performance Monitor & Bottleneck Diagnostics
  */
-const MAX_FIRESTORE_BATCH_SIZE = 500;
+export interface SyncPerformanceMetric {
+  id: string;
+  operation: 'PUSH_DELTA' | 'PUSH_FULL' | 'PULL_DELTA' | 'PULL_FULL' | 'FETCH_USERS';
+  startTime: string;
+  endTime: string;
+  durationMs: number;
+  processedCount: number;
+  rateDocsPerSec: number;
+  collectionsProcessed: string[];
+  status: 'SUCCESS' | 'ERROR';
+  details?: string;
+}
+
+const syncPerformanceLogs: SyncPerformanceMetric[] = [];
+
+export function recordSyncPerformanceLog(metric: Omit<SyncPerformanceMetric, 'id'>): SyncPerformanceMetric {
+  const fullMetric: SyncPerformanceMetric = {
+    id: `perf_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    ...metric
+  };
+  
+  syncPerformanceLogs.push(fullMetric);
+  if (syncPerformanceLogs.length > 100) {
+    syncPerformanceLogs.shift();
+  }
+
+  const rateFormatted = isFinite(fullMetric.rateDocsPerSec) ? fullMetric.rateDocsPerSec.toFixed(1) : '0.0';
+  const logMsg = `[FirebaseSync Performance Log] ${fullMetric.operation} | Start: ${fullMetric.startTime} | End: ${fullMetric.endTime} | Duration: ${fullMetric.durationMs}ms | Docs Processed: ${fullMetric.processedCount} | Speed: ${rateFormatted} docs/s | Status: ${fullMetric.status}`;
+  console.info(logMsg, fullMetric);
+
+  recordSyncAuditLog({
+    type: 'DIAGNOSTIC',
+    status: metric.status === 'SUCCESS' ? 'SUCCESS' : 'ERROR',
+    title: `Sync Performance Log: ${fullMetric.operation}`,
+    details: `${logMsg} | Collections: ${metric.collectionsProcessed.join(', ') || 'N/A'}`,
+    itemCount: metric.processedCount,
+    technicalDetails: JSON.stringify(fullMetric)
+  });
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('sync-performance-logged', { detail: fullMetric }));
+  }
+
+  return fullMetric;
+}
+
+export function getSyncPerformanceHistory(): SyncPerformanceMetric[] {
+  return [...syncPerformanceLogs];
+}
+
+/**
+ * Data Compression & Field Stripping Helper
+ * Strips non-essential metadata fields (null, undefined, _ prefixed fields, internal UI states)
+ * before pushing to Firestore, minimizing total bytes transferred and speeding up sync.
+ */
+export function compressDocDataForSync(data: any): any {
+  if (data === null || data === undefined) return undefined;
+  if (typeof data !== 'object') return data;
+  if (data instanceof Date) return data.toISOString();
+  if (Array.isArray(data)) {
+    return data
+      .map(item => compressDocDataForSync(item))
+      .filter(item => item !== undefined && item !== null);
+  }
+
+  const compressed: Record<string, any> = {};
+  for (const key of Object.keys(data)) {
+    // Strip non-essential internal/metadata fields
+    if (
+      key.startsWith('_') ||
+      key === 'isLocalOnly' ||
+      key === 'localStatus' ||
+      key === 'tempFlag' ||
+      key === 'isEditing' ||
+      key === 'isOpen' ||
+      key === 'selected' ||
+      key === '_syncState' ||
+      key === 'pendingSync' ||
+      key === '_tempId'
+    ) {
+      continue;
+    }
+
+    const val = data[key];
+    if (val === undefined || val === null) {
+      continue;
+    }
+
+    if (typeof val === 'object') {
+      const nested = compressDocDataForSync(val);
+      if (nested !== undefined && (typeof nested !== 'object' || Object.keys(nested).length > 0 || Array.isArray(nested))) {
+        compressed[key] = nested;
+      }
+    } else {
+      compressed[key] = val;
+    }
+  }
+  return compressed;
+}
+
+/**
+ * Optimized write operations per WriteBatch (chunked to 150 ops per batch to prevent payload limits and request timeouts)
+ */
+const MAX_FIRESTORE_BATCH_SIZE = 150;
 let lastReachabilityCheckTime = 0;
 const REACHABILITY_CHECK_TTL_MS = 30000;
 
@@ -1213,6 +1316,9 @@ export async function pushAllLocalDataToFirebase(
   forceFullPush: boolean = false,
   isSilent: boolean = false
 ): Promise<{ success: boolean; count: number; message: string }> {
+  const pushStartMs = performance.now();
+  const pushStartIso = new Date().toISOString();
+
   try {
     firebaseStatus = 'syncing';
     notifyFirebaseStatusChanged();
@@ -1231,6 +1337,19 @@ export async function pushAllLocalDataToFirebase(
         errorMessage: errMsg,
         solutionHint: 'Aktifkan koneksi WiFi atau paket data internet Anda lalu coba sinkronisasi kembali.'
       });
+
+      recordSyncPerformanceLog({
+        operation: forceFullPush ? 'PUSH_FULL' : 'PUSH_DELTA',
+        startTime: pushStartIso,
+        endTime: new Date().toISOString(),
+        durationMs: Math.round(performance.now() - pushStartMs),
+        processedCount: 0,
+        rateDocsPerSec: 0,
+        collectionsProcessed: [],
+        status: 'ERROR',
+        details: errMsg
+      });
+
       return {
         success: false,
         count: 0,
@@ -1278,6 +1397,18 @@ export async function pushAllLocalDataToFirebase(
           errorMessage: errMsg,
           technicalDetails: `Error Code: ${errCode} | Path: _connection_test/sync_write_check`,
           solutionHint: hint
+        });
+
+        recordSyncPerformanceLog({
+          operation: forceFullPush ? 'PUSH_FULL' : 'PUSH_DELTA',
+          startTime: pushStartIso,
+          endTime: new Date().toISOString(),
+          durationMs: Math.round(performance.now() - pushStartMs),
+          processedCount: 0,
+          rateDocsPerSec: 0,
+          collectionsProcessed: [],
+          status: 'ERROR',
+          details: userFriendlyMsg
         });
 
         if (typeof window !== 'undefined') {
@@ -1334,7 +1465,7 @@ export async function pushAllLocalDataToFirebase(
         }
       }
 
-      // 2. Commit to Firestore in controlled chunked batches (max 500 operations per write batch)
+      // 2. Commit to Firestore in controlled chunked batches (max 150 operations per write batch with data compression)
       const batchesToCommit: ReturnType<typeof writeBatch>[] = [];
 
       for (let i = 0; i < itemsToSync.length; i += MAX_FIRESTORE_BATCH_SIZE) {
@@ -1344,7 +1475,8 @@ export async function pushAllLocalDataToFirebase(
         for (const item of chunk) {
           const targetCol = getTenantCollectionName(item.storeName);
           if (item.val) {
-            const cleanVal = JSON.parse(JSON.stringify(item.val));
+            // Data compression step: strip non-essential metadata fields
+            const cleanVal = compressDocDataForSync(item.val);
             if (!cleanVal.updatedAt) {
               cleanVal.updatedAt = new Date().toISOString();
             }
@@ -1358,14 +1490,31 @@ export async function pushAllLocalDataToFirebase(
         batchesToCommit.push(batch);
       }
 
-      // Execute batches in small controlled chunks (2 at a time) with retries to prevent connection timeouts
-      await commitWriteBatches(batchesToCommit, 2, 50, 3);
+      // Execute batches in optimal parallel chunks (6 at a time with 0ms delay) for high-speed delta sync
+      await commitWriteBatches(batchesToCommit, 6, 0, 3);
 
       await store.syncQueue.clear().catch(() => {});
 
       firebaseStatus = 'connected';
       lastSyncTime = new Date().toLocaleTimeString('id-ID');
       notifyFirebaseStatusChanged();
+
+      const pushEndMs = performance.now();
+      const durationMs = Math.round(pushEndMs - pushStartMs);
+      const rateDocsPerSec = durationMs > 0 ? (deltaCount / (durationMs / 1000)) : deltaCount;
+      const processedCols = Array.from(new Set(itemsToSync.map(i => i.storeName)));
+
+      recordSyncPerformanceLog({
+        operation: 'PUSH_DELTA',
+        startTime: pushStartIso,
+        endTime: new Date().toISOString(),
+        durationMs,
+        processedCount: deltaCount,
+        rateDocsPerSec,
+        collectionsProcessed: processedCols,
+        status: 'SUCCESS',
+        details: `Delta push completed for ${deltaCount} modified items across ${processedCols.length} stores.`
+      });
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('sync-status-changed'));
@@ -1394,6 +1543,20 @@ export async function pushAllLocalDataToFirebase(
       firebaseStatus = 'connected';
       lastSyncTime = new Date().toLocaleTimeString('id-ID');
       notifyFirebaseStatusChanged();
+
+      const pushEndMs = performance.now();
+      const durationMs = Math.round(pushEndMs - pushStartMs);
+      recordSyncPerformanceLog({
+        operation: 'PUSH_DELTA',
+        startTime: pushStartIso,
+        endTime: new Date().toISOString(),
+        durationMs,
+        processedCount: 0,
+        rateDocsPerSec: 0,
+        collectionsProcessed: [],
+        status: 'SUCCESS',
+        details: 'Data lokal sudah 100% tersinkron dengan Cloud Firebase.'
+      });
 
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new Event('sync-status-changed'));
@@ -1461,7 +1624,8 @@ export async function pushAllLocalDataToFirebase(
                 const chunk = items.slice(i, i + MAX_FIRESTORE_BATCH_SIZE);
                 for (const item of chunk) {
                   const safeId = String(item.id).replace(/\//g, '_');
-                  const cleanVal = JSON.parse(JSON.stringify(item.val || {}));
+                  // Data compression step: strip non-essential metadata fields
+                  const cleanVal = compressDocDataForSync(item.val || {});
                   if (!cleanVal.updatedAt) {
                     cleanVal.updatedAt = new Date().toISOString();
                   }
@@ -1504,6 +1668,21 @@ export async function pushAllLocalDataToFirebase(
       const fullErrorMsg = syncErrors.join(' | ');
       firebaseStatus = 'error';
       notifyFirebaseStatusChanged();
+
+      const pushEndMs = performance.now();
+      const durationMs = Math.round(pushEndMs - pushStartMs);
+      recordSyncPerformanceLog({
+        operation: 'PUSH_FULL',
+        startTime: pushStartIso,
+        endTime: new Date().toISOString(),
+        durationMs,
+        processedCount: totalPushed,
+        rateDocsPerSec: 0,
+        collectionsProcessed: [...SYNCED_COLLECTIONS],
+        status: 'ERROR',
+        details: fullErrorMsg
+      });
+
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('sync-progress-updated', {
           detail: {
@@ -1528,6 +1707,22 @@ export async function pushAllLocalDataToFirebase(
     firebaseStatus = 'connected';
     lastSyncTime = new Date().toLocaleTimeString('id-ID');
     notifyFirebaseStatusChanged();
+
+    const pushEndMs = performance.now();
+    const durationMs = Math.round(pushEndMs - pushStartMs);
+    const rateDocsPerSec = durationMs > 0 ? (totalPushed / (durationMs / 1000)) : totalPushed;
+
+    recordSyncPerformanceLog({
+      operation: 'PUSH_FULL',
+      startTime: pushStartIso,
+      endTime: new Date().toISOString(),
+      durationMs,
+      processedCount: totalPushed,
+      rateDocsPerSec,
+      collectionsProcessed: [...SYNCED_COLLECTIONS],
+      status: 'SUCCESS',
+      details: `Full push committed ${totalPushed} items across ${completedCols} collections.`
+    });
 
     recordSyncAuditLog({
       type: 'PUSH',
@@ -1949,6 +2144,19 @@ export async function pullAllRemoteDataFromFirebase(
     notifyFirebaseStatusChanged();
 
     const totalDurationMs = Math.round(performance.now() - pullStartTime);
+    const pullRate = totalDurationMs > 0 ? (totalUpdated / (totalDurationMs / 1000)) : totalUpdated;
+
+    recordSyncPerformanceLog({
+      operation: forceFullPull ? 'PULL_FULL' : 'PULL_DELTA',
+      startTime: currentPullTimestamp,
+      endTime: new Date().toISOString(),
+      durationMs: totalDurationMs,
+      processedCount: totalUpdated,
+      rateDocsPerSec: pullRate,
+      collectionsProcessed: [...SYNCED_COLLECTIONS],
+      status: 'SUCCESS',
+      details: `Remote pull completed (${(totalDurationMs / 1000).toFixed(1)}s). Updated: ${totalUpdated}, Unchanged: ${totalSkippedUnchanged}, Fetched: ${totalFetched}.`
+    });
 
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('sync-progress-updated', {

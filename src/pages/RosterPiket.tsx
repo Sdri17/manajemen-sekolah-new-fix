@@ -10,6 +10,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import toast from 'react-hot-toast';
 import BackgroundDataBanner from '../components/BackgroundDataBanner';
+import { distributePiketAssignments, logRosterUpdateAuditEvent, isAssignmentAllowed } from '../lib/rosterDistribution';
 
 interface RosterPiketProps {
   semester: string;
@@ -74,6 +75,9 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
 
   // Roster form modal state
   const [isRosterModalOpen, setIsRosterModalOpen] = useState(false);
+  const [isResetRosterModalOpen, setIsResetRosterModalOpen] = useState(false);
+  const [isResetPiketModalOpen, setIsResetPiketModalOpen] = useState(false);
+  const [isAutoRosterModalOpen, setIsAutoRosterModalOpen] = useState(false);
   const [editingRosterId, setEditingRosterId] = useState<string | null>(null);
   const [rosterFormData, setRosterFormData] = useState({
     hari: 'Senin',
@@ -131,11 +135,43 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
     }
     const newCount = Math.max(1, Math.min(15, val));
     setJumlahPiketHarian(newCount);
+
+    // Strict-cap enforcement check on existing piket items:
+    // Under no circumstances can assigned piket staff per day exceed user-defined newCount
+    const piketsByDay: Record<string, PiketItem[]> = {};
+    for (const item of piketItems) {
+      if (!piketsByDay[item.hari]) piketsByDay[item.hari] = [];
+      piketsByDay[item.hari].push(item);
+    }
+
+    const itemsToKeep: PiketItem[] = [];
+    const itemsToRemove: PiketItem[] = [];
+
+    for (const day of Object.keys(piketsByDay)) {
+      const dayList = piketsByDay[day];
+      if (dayList.length > newCount) {
+        itemsToKeep.push(...dayList.slice(0, newCount));
+        itemsToRemove.push(...dayList.slice(newCount));
+      } else {
+        itemsToKeep.push(...dayList);
+      }
+    }
+
+    if (itemsToRemove.length > 0) {
+      setPiketItems(itemsToKeep);
+      for (const rem of itemsToRemove) {
+        await store.piket.removeItem(rem.id).catch(() => {});
+        await store.syncQueue.setItem(`piket::${rem.id}`, 'deleted').catch(() => {});
+      }
+      toast.success(`Strict-Cap: ${itemsToRemove.length} piket yang melebihi batas (${newCount}/hari) disesuaikan secara otomatis.`);
+    }
+
     try {
       const curSettings = (await store.settings.getItem<Settings>('current')) || defaultSettings;
       const updated = { ...curSettings, jumlah_piket_harian: newCount };
       await store.settings.setItem('current', updated);
-      toast.success(`Jumlah piket harian diatur ke ${newCount} petugas per hari`);
+      toast.success(`Jumlah piket harian diatur ke ${newCount} petugas per hari (Strict-Cap Active)`);
+      window.dispatchEvent(new Event('data-changed'));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (err) {
       console.error('Gagal menyimpan jumlah piket harian', err);
@@ -485,10 +521,36 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
       return;
     }
 
-    // Check if student is already in piket for this day
-    const exists = piketItems.some(p => p.hari === selectedPiketDay && p.id_siswa === selectedStudentForPiket);
-    if (exists) {
-      toast.error('Siswa ini sudah dijadwalkan piket pada hari ' + selectedPiketDay);
+    const studentObj = students.find(s => s.id === selectedStudentForPiket);
+    const studentName = studentObj ? studentObj.nama : selectedStudentForPiket;
+
+    // Build current counts per student and per day
+    const studentAssignmentCounts: Record<string, number> = {};
+    const dayAssignmentCounts: Record<string, number> = {};
+    const assignedThisDay = new Set<string>();
+
+    piketItems.forEach(p => {
+      studentAssignmentCounts[p.id_siswa] = (studentAssignmentCounts[p.id_siswa] || 0) + 1;
+      dayAssignmentCounts[p.hari] = (dayAssignmentCounts[p.hari] || 0) + 1;
+      if (p.hari === selectedPiketDay) {
+        assignedThisDay.add(p.id_siswa);
+      }
+    });
+
+    // Execute strict-cap validation
+    const validation = isAssignmentAllowed({
+      studentId: selectedStudentForPiket,
+      studentName,
+      day: selectedPiketDay,
+      studentAssignmentCounts,
+      dayAssignmentCounts,
+      maxAssignmentsPerStudent: 2, // '2-limit' constraint
+      maxDayCap: jumlahPiketHarian,
+      assignedThisDay
+    });
+
+    if (!validation.allowed) {
+      toast.error(validation.reason);
       return;
     }
 
@@ -539,74 +601,199 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
       return;
     }
 
+    const toastId = toast.loading('Mengoptimalkan & membersihkan state piket...');
     try {
-      // Clear current piket first
-      for (const item of piketItems) {
-        await store.piket.removeItem(item.id);
-        await store.syncQueue.setItem(`piket::${item.id}`, 'deleted');
+      // 1. Clear current piket first using parallel batch deletion for clean state
+      if (piketItems.length > 0) {
+        const deletePromises = piketItems.flatMap(item => [
+          store.piket.removeItem(item.id),
+          store.syncQueue.setItem(`piket::${item.id}`, 'deleted')
+        ]);
+        await Promise.all(deletePromises);
       }
 
-      const days = daysList;
-      const targetPerDay = Math.max(jumlahPiketHarian, Math.ceil(classStudents.length / days.length));
-      let studentIndex = 0;
+      // 2. Execute automatic distribution with strict-cap validation & logging
+      const distributionResult = distributePiketAssignments({
+        students: classStudents,
+        days: daysList,
+        selectedClass,
+        semester,
+        jumlahPiketHarian,
+        maxAssignmentsPerStudent: 2 // Strict-cap 2-limit constraint per student
+      });
 
-      for (const day of days) {
-        const countForThisDay = Math.min(targetPerDay, classStudents.length);
-        const assignedThisDay = new Set<string>();
+      const writePromises: Promise<any>[] = [];
+      const finalVerifiedPiketList: PiketItem[] = distributionResult.piketList.map(item => ({
+        id: item.id,
+        hari: item.hari,
+        id_siswa: item.id_siswa,
+        kelas: item.kelas,
+        semester: item.semester
+      }));
 
-        while (assignedThisDay.size < countForThisDay) {
-          const std = classStudents[studentIndex % classStudents.length];
-          if (!assignedThisDay.has(std.id)) {
-            assignedThisDay.add(std.id);
-            const id = uuidv4();
-            const newItem: PiketItem = {
-              id,
-              hari: day,
-              id_siswa: std.id,
-              kelas: selectedClass,
-              semester: semester
-            };
-            await store.piket.setItem(id, newItem);
-            await store.syncQueue.setItem(`piket::${id}`, 'updated');
-          }
-          studentIndex++;
-        }
+      for (const item of finalVerifiedPiketList) {
+        writePromises.push(store.piket.setItem(item.id, item));
+        writePromises.push(store.syncQueue.setItem(`piket::${item.id}`, 'updated'));
       }
 
-      toast.success(`Auto distribusi piket (${jumlahPiketHarian} petugas/hari) disimpan & sinkronisasi berjalan!`);
-      loadPiket();
+      // Execute writes in parallel
+      await Promise.all(writePromises);
+
+      // 3. Log event to Firestore audit_logs collection filtering for roster_update
+      await logRosterUpdateAuditEvent({
+        selectedClass,
+        semester,
+        jumlahPiketHarian,
+        result: distributionResult
+      }).catch(err => console.warn('[AuditLog] Non-critical error logging roster_update:', err));
+
+      setPiketItems(finalVerifiedPiketList);
+      toast.success(`Auto distribusi piket (Strict-Cap ${distributionResult.maxDayCap} petugas/hari, max 2 penugasan/siswa) disimpan & tersinkron!`, { id: toastId });
       window.dispatchEvent(new Event('data-changed'));
+      window.dispatchEvent(new CustomEvent('delta-data-changed', { detail: { storeName: 'piket' } }));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (err) {
-      toast.error('Gagal melakukan distribusi piket harian');
+      console.error('[handleGeneratePiketKolektif Error]', err);
+      toast.error('Gagal melakukan distribusi piket harian', { id: toastId });
     }
   };
 
   const handleResetPiket = async () => {
+    if (!selectedClass) return;
+    if (piketItems.length === 0) {
+      toast.error('Tidak ada jadwal piket yang perlu dibersihkan');
+      setIsResetPiketModalOpen(false);
+      return;
+    }
+    const count = piketItems.length;
+    const toastId = toast.loading(`Mereset ${count} petugas piket untuk Kelas ${selectedClass}...`);
     try {
-      for (const item of piketItems) {
-        await store.piket.removeItem(item.id);
-        await store.syncQueue.setItem(`piket::${item.id}`, 'deleted');
-      }
-      toast.success('Jadwal piket dibersihkan & sinkronisasi otomatis berjalan!');
-      loadPiket();
+      const deletePromises = piketItems.flatMap(item => [
+        store.piket.removeItem(item.id),
+        store.syncQueue.setItem(`piket::${item.id}`, 'deleted')
+      ]);
+
+      await Promise.all(deletePromises);
+
+      setPiketItems([]);
+      setIsResetPiketModalOpen(false);
+      toast.success(`Jadwal piket Kelas ${selectedClass} (${count} petugas) dibersihkan!`, { id: toastId });
       window.dispatchEvent(new Event('data-changed'));
+      window.dispatchEvent(new CustomEvent('delta-data-changed', { detail: { storeName: 'piket' } }));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (e) {
-      toast.error('Gagal mereset piket');
+      toast.error('Gagal mereset piket', { id: toastId });
+    }
+  };
+
+  const handleGenerateRosterKolektif = async () => {
+    if (!selectedClass) {
+      toast.error('Pilih kelas terlebih dahulu');
+      return;
+    }
+    const defaultSubjects = subjects.length > 0 ? subjects : [
+      'Pendidikan Pancasila',
+      'Bahasa Indonesia',
+      'Matematika',
+      'IPAS',
+      'PJOK',
+      'Seni Budaya & Prakarya',
+      'Pendidikan Agama & Budi Pekerti',
+      'Bahasa Inggris'
+    ];
+
+    const toastId = toast.loading(`Mengompilasi distribusi roster otomatis untuk Kelas ${selectedClass}...`);
+    try {
+      // 1. Clear current roster items in parallel batch for a clean state
+      if (rosterItems.length > 0) {
+        const deletePromises = rosterItems.flatMap(item => [
+          store.roster.removeItem(item.id),
+          store.syncQueue.setItem(`roster::${item.id}`, 'deleted')
+        ]);
+        await Promise.all(deletePromises);
+      }
+
+      // 2. Generate new roster schedule for daysList (4 JP per day standard)
+      const newItems: RosterItem[] = [];
+      const writePromises: Promise<any>[] = [];
+      let subjectIndex = 0;
+
+      for (const day of daysList) {
+        let currentTime = jamMulaiSekolah || '08:00';
+
+        // 4 JP slots per day
+        for (let jp = 1; jp <= 4; jp++) {
+          const matchingBreak = breakTimes.find(b => b.jam_mulai === currentTime);
+          if (matchingBreak) {
+            currentTime = matchingBreak.jam_selesai;
+          }
+
+          const jamMulai = currentTime;
+          const jamSelesai = addMinutesToTime(jamMulai, durasiJpMenit);
+          const mataPelajaran = defaultSubjects[subjectIndex % defaultSubjects.length];
+
+          const id = uuidv4();
+          const item: RosterItem = {
+            id,
+            hari: day,
+            jam_mulai: jamMulai,
+            jam_selesai: jamSelesai,
+            mata_pelajaran: mataPelajaran,
+            guru: '',
+            kelas: selectedClass,
+            semester: semester
+          };
+
+          newItems.push(item);
+          writePromises.push(store.roster.setItem(id, item));
+          writePromises.push(store.syncQueue.setItem(`roster::${id}`, 'updated'));
+
+          currentTime = jamSelesai;
+          subjectIndex++;
+        }
+      }
+
+      await Promise.all(writePromises);
+
+      setRosterItems(newItems);
+      setIsAutoRosterModalOpen(false);
+      toast.success(`Auto Distribusi Roster Kelas ${selectedClass} selesai (${newItems.length} JP)!`, { id: toastId });
+      window.dispatchEvent(new Event('data-changed'));
+      window.dispatchEvent(new CustomEvent('delta-data-changed', { detail: { storeName: 'roster' } }));
+      window.dispatchEvent(new Event('trigger-immediate-sync'));
+    } catch (err) {
+      toast.error('Gagal melakukan auto distribusi roster', { id: toastId });
     }
   };
 
   const handleResetRoster = async () => {
+    if (!selectedClass) {
+      toast.error('Pilih kelas terlebih dahulu');
+      return;
+    }
+    if (rosterItems.length === 0) {
+      toast.error('Tidak ada jadwal roster yang perlu dibersihkan');
+      setIsResetRosterModalOpen(false);
+      return;
+    }
+    const count = rosterItems.length;
+    const toastId = toast.loading(`Mereset ${count} jadwal pelajaran untuk Kelas ${selectedClass}...`);
     try {
-      for (const item of rosterItems) {
-        await store.roster.removeItem(item.id);
-      }
-      toast.success('Jadwal pelajaran dibersihkan & sinkronisasi otomatis berjalan!');
-      loadRoster();
+      const deletePromises = rosterItems.flatMap(item => [
+        store.roster.removeItem(item.id),
+        store.syncQueue.setItem(`roster::${item.id}`, 'deleted')
+      ]);
+
+      await Promise.all(deletePromises);
+
+      setRosterItems([]);
+      setIsResetRosterModalOpen(false);
+      toast.success(`Jadwal pelajaran Kelas ${selectedClass} (${count} JP) dibersihkan!`, { id: toastId });
+      window.dispatchEvent(new Event('data-changed'));
+      window.dispatchEvent(new CustomEvent('delta-data-changed', { detail: { storeName: 'roster' } }));
       window.dispatchEvent(new Event('trigger-immediate-sync'));
     } catch (e) {
-      toast.error('Gagal mereset jadwal pelajaran');
+      toast.error('Gagal mereset jadwal pelajaran', { id: toastId });
     }
   };
 
@@ -1132,10 +1319,20 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                           });
                           setIsRosterModalOpen(true);
                         }}
-                        className="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-semibold shadow-lg shadow-indigo-500/25 transition-colors cursor-pointer"
+                        className="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-md shadow-indigo-600/25 transition-all cursor-pointer active:scale-95"
                       >
-                        <Plus size={16} /> Tambah Jam Pelajaran
+                        <Plus size={15} /> Tambah JP
                       </button>
+                      
+                      <button
+                        onClick={() => setIsAutoRosterModalOpen(true)}
+                        className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
+                        title="Distribusi otomatis jadwal pelajaran untuk seluruh hari kerja"
+                      >
+                        <Sparkles size={15} className="text-indigo-400" />
+                        <span>Auto Distribusi Roster</span>
+                      </button>
+
                       <button
                         onClick={() => setIsConfigModalOpen(true)}
                         className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-semibold transition-all cursor-pointer shadow-sm"
@@ -1144,11 +1341,14 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                         <Sliders size={15} className="text-amber-400" />
                         <span>Roster Cerdas ({durasiJpMenit}m)</span>
                       </button>
+
                       <button
-                        onClick={handleResetRoster}
-                        className="border border-slate-700 hover:bg-slate-800 text-slate-300 px-4 py-2 rounded-xl text-sm font-medium transition-colors cursor-pointer"
+                        onClick={() => setIsResetRosterModalOpen(true)}
+                        className="border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                        title="Hapus seluruh jadwal pelajaran untuk periode/kelas ini"
                       >
-                        Reset Roster
+                        <Trash2 size={14} className="text-rose-400" />
+                        <span>Reset Roster</span>
                       </button>
                     </div>
                   )}
@@ -1447,16 +1647,18 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
                     <>
                       <button
                         onClick={handleGeneratePiketKolektif}
-                        className="bg-indigo-500/20 text-indigo-400 hover:bg-indigo-500/30 border border-indigo-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-sm transition-colors cursor-pointer active:scale-95"
+                        className="bg-indigo-500/20 text-indigo-300 hover:bg-indigo-500/30 border border-indigo-500/30 px-3.5 py-2 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-sm transition-all cursor-pointer active:scale-95"
                         title="Distribusikan semua siswa kelas secara acak dan merata ke jadwal piket"
                       >
-                        <RefreshCw size={14} /> Auto Distribusi
+                        <RefreshCw size={14} className="text-indigo-400" /> Auto Distribusi Piket
                       </button>
                       <button
-                        onClick={handleResetPiket}
-                        className="border border-slate-700 hover:bg-slate-800 text-slate-300 px-3.5 py-2 rounded-xl text-xs font-medium transition-colors cursor-pointer active:scale-95"
+                        onClick={() => setIsResetPiketModalOpen(true)}
+                        className="border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                        title="Hapus seluruh penugasan piket untuk periode/kelas ini"
                       >
-                        Reset Piket
+                        <Trash2 size={14} className="text-rose-400" />
+                        <span>Reset Piket</span>
                       </button>
                     </>
                   )}
@@ -1934,6 +2136,144 @@ export default function RosterPiket({ semester, role, settings, syncData, isSync
             <div className="p-5 border-t border-slate-700/50 bg-slate-800/80 flex justify-end gap-3">
               <button onClick={() => setPiketToDelete(null)} className="px-5 py-2 text-sm font-medium text-slate-300 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer">Batal</button>
               <button onClick={() => handleDeletePiket(piketToDelete)} className="px-5 py-2 text-sm font-medium bg-rose-500 hover:bg-rose-600 text-white rounded-xl shadow-lg shadow-rose-500/20 transition-colors cursor-pointer">Hapus</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 5. RESET ROSTER CONFIRMATION MODAL */}
+      {isResetRosterModalOpen && createPortal(
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-[9999] animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700/80 p-6 rounded-2xl max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-3 bg-rose-500/10 rounded-xl border border-rose-500/20">
+                <ShieldAlert size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Konfirmasi Reset Roster</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Pembersihan Jam Pelajaran</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60 text-xs text-slate-300 space-y-2">
+              <p>
+                Anda akan menghapus seluruh <strong className="text-rose-300 font-bold">{rosterItems.length} jam pelajaran</strong> untuk <strong className="text-white">Kelas {selectedClass}</strong> (Semester {semester}).
+              </p>
+              <p className="text-[11px] text-slate-400 italic">
+                Proses ini menjamin state bersih (clean state) sebelum Anda menjalankan auto-distribusi atau penginputan ulang.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsResetRosterModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleResetRoster}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-600/30 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+              >
+                <Trash2 size={14} />
+                Ya, Bersihkan Roster
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 6. RESET PIKET CONFIRMATION MODAL */}
+      {isResetPiketModalOpen && createPortal(
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-[9999] animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700/80 p-6 rounded-2xl max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-3 bg-rose-500/10 rounded-xl border border-rose-500/20">
+                <ShieldAlert size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Konfirmasi Reset Piket</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Pembersihan Petugas Piket Harian</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60 text-xs text-slate-300 space-y-2">
+              <p>
+                Anda akan menghapus seluruh <strong className="text-rose-300 font-bold">{piketItems.length} penugasan piket</strong> untuk <strong className="text-white">Kelas {selectedClass}</strong> (Semester {semester}).
+              </p>
+              <p className="text-[11px] text-slate-400 italic">
+                Sangat disarankan sebelum menjalankan fitur Auto Distribusi Piket agar tidak terjadi duplikasi penugasan.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsResetPiketModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleResetPiket}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-rose-600/30 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+              >
+                <Trash2 size={14} />
+                Ya, Bersihkan Piket
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 7. AUTO ROSTER MODAL */}
+      {isAutoRosterModalOpen && createPortal(
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 z-[9999] animate-fade-in">
+          <div className="bg-slate-900 border border-slate-700/80 p-6 rounded-2xl max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-indigo-400">
+              <div className="p-3 bg-indigo-500/10 rounded-xl border border-indigo-500/20">
+                <Sparkles size={24} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Auto Distribusi Roster Cerdas</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Kompilasi Jadwal Pelajaran Otomatis</p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60 text-xs text-slate-300 space-y-2">
+              <p>
+                Sistem akan menyusun jadwal pelajaran 4 JP per hari untuk <strong className="text-white">Kelas {selectedClass}</strong> sepanjang hari sekolah ({daysList.join(', ')}).
+              </p>
+              <ul className="text-[11px] text-slate-400 space-y-1 list-disc pl-4">
+                <li>Jam Mulai: <span className="text-indigo-300 font-mono font-bold">{jamMulaiSekolah}</span></li>
+                <li>Durasi 1 JP: <span className="text-indigo-300 font-bold">{durasiJpMenit} Menit</span></li>
+                <li>Mata Pelajaran: <span className="text-indigo-300 font-bold">{subjects.length > 0 ? subjects.length + ' Mapel Dikonfigurasi' : 'Standar Kurikulum'}</span></li>
+                <li>Otomatis mereset roster secara bersih (clean state) sebelum pendistribusian.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsAutoRosterModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs rounded-xl transition-all cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerateRosterKolektif}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-indigo-600/30 flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+              >
+                <Sparkles size={14} />
+                Jalankan Auto Distribusi
+              </button>
             </div>
           </div>
         </div>,

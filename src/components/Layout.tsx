@@ -56,6 +56,7 @@ import StudentDossierModal from './StudentDossierModal';
 import DatabaseConnectModal from './DatabaseConnectModal';
 import ConflictResolutionModal from './ConflictResolutionModal';
 import { ManualSyncQueueModal } from './ManualSyncQueueModal';
+import ContextInspectorModal from './ContextInspectorModal';
 import { usePendingSync } from '../hooks/usePendingSync';
 import { getFirebaseStatus } from '../lib/firebaseSync';
 import { 
@@ -148,6 +149,7 @@ export default function Layout({
   const [isDbConnectModalOpen, setIsDbConnectModalOpen] = useState(false);
   const [isTaskNotificationOpen, setIsTaskNotificationOpen] = useState(false);
   const [todayPendingTaskCount, setTodayPendingTaskCount] = useState<number>(0);
+  const [isContextInspectorOpen, setIsContextInspectorOpen] = useState(false);
 
   useEffect(() => {
     const calculateTodayPending = async () => {
@@ -627,16 +629,21 @@ export default function Layout({
             </div>
           </div>
 
-          {/* Prominent Current User & Role Indicator Badge in Header */}
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/90 border border-indigo-500/30 rounded-full text-slate-200 text-xs shadow-sm shrink-0">
-            <div className="w-6 h-6 rounded-full bg-indigo-600/30 border border-indigo-400/40 text-indigo-300 flex items-center justify-center font-bold text-[10px] uppercase shrink-0">
+          {/* Prominent Current User & Role Indicator Badge in Header with Context Inspector */}
+          <div 
+            onClick={() => setIsContextInspectorOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/90 border border-indigo-500/30 hover:border-indigo-400/60 rounded-full text-slate-200 text-xs shadow-sm shrink-0 cursor-pointer transition-all group"
+            title="Klik untuk membuka Context Inspector & Verifikasi Izin Firestore Rombel"
+          >
+            <div className="w-6 h-6 rounded-full bg-indigo-600/30 border border-indigo-400/40 text-indigo-300 flex items-center justify-center font-bold text-[10px] uppercase shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
               {(user?.nama || user?.username || 'U').charAt(0)}
             </div>
             <div className="flex items-center gap-2 min-w-0">
               <span className="font-semibold text-slate-200 text-xs truncate max-w-[100px] sm:max-w-[150px]">
                 {user?.nama || user?.username || 'Pengguna'}
               </span>
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0 uppercase tracking-wider">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0 uppercase tracking-wider flex items-center gap-1">
+                <ShieldCheck size={12} className="text-indigo-400 group-hover:scale-110 transition-transform" />
                 {getDisplayRoleLabel(user)}
               </span>
             </div>
@@ -1169,6 +1176,13 @@ export default function Layout({
           onClose={() => setIsDbConnectModalOpen(false)}
         />
       </Suspense>
+
+      {/* Security Context & Rules Inspector Modal */}
+      <ContextInspectorModal
+        isOpen={isContextInspectorOpen}
+        onClose={() => setIsContextInspectorOpen(false)}
+        user={user}
+      />
     </div>
   );
 }
