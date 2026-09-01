@@ -104,7 +104,7 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
     }
   };
 
-  const handleSaveCustomConfig = (e: React.FormEvent) => {
+  const handleSaveCustomConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customConfig.projectId || !customConfig.apiKey) {
       toast.error('Mohon isi Project ID dan API Key Firebase!');
@@ -123,7 +123,22 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
     };
 
     saveCustomFirebaseConfig(configToSave);
-    toast.success('Konfigurasi database kustom berhasil disimpan. Memuat ulang...');
+
+    // Persist to backend API so firebase-applet-config.json on disk is updated for Vercel / Git builds
+    try {
+      const res = await fetch('/api/update-firebase-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(configToSave)
+      });
+      if (res.ok) {
+        toast.success('File firebase-applet-config.json dalam project berhasil diperbarui!');
+      }
+    } catch (_err) {
+      // Ignored if purely static host
+    }
+
+    toast.success('Konfigurasi database kustom berhasil disimpan & diperbarui. Memuat ulang...');
   };
 
   const handleResetDefaultConfig = () => {

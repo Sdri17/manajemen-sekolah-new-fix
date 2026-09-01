@@ -4,7 +4,11 @@ import ClassManagement from './ClassManagement';
 import SystemAuditLogViewer from './SystemAuditLogViewer';
 import EventAuditLogViewer from './EventAuditLogViewer';
 import AdminRosterAuditView from './AdminRosterAuditView';
+import ActiveDatabaseIndicator from './ActiveDatabaseIndicator';
+import SyncStatusWidget from './SyncStatusWidget';
+import SyncPerformanceDashboard from './SyncPerformanceDashboard';
 import SyncCountDiagnosticTool from './SyncCountDiagnosticTool';
+import SyncDiagnostics from './SyncDiagnostics';
 import RolePermissionInspector from './RolePermissionInspector';
 import SecurityAuditView from './SecurityAuditView';
 import { Users, Activity, ShieldCheck, Lock, Layers, GitCompare, History, UserCheck, ShieldAlert, Calendar } from 'lucide-react';
@@ -150,6 +154,15 @@ export default function AdminManagementPanel({
         </div>
       </div>
 
+      {/* Visual Indicator: Active Firebase Project ID directly from SDK */}
+      <ActiveDatabaseIndicator />
+
+      {/* Sync Status Widget: Displays last 10 Firestore sync operations from audit_logs */}
+      <SyncStatusWidget />
+
+      {/* Sync Performance Dashboard: Parses last 50 audit logs to calculate propagation timing & latency breakdown */}
+      <SyncPerformanceDashboard />
+
       {/* Tab Contents */}
       {activeTab === 'users' && (
         <UserManagement onUserUpdated={onUserUpdated} />
@@ -177,6 +190,7 @@ export default function AdminManagementPanel({
 
       {activeTab === 'diagnostics' && (
         <div className="space-y-8">
+          <SyncDiagnostics />
           <RolePermissionInspector />
           <SyncCountDiagnosticTool />
         </div>

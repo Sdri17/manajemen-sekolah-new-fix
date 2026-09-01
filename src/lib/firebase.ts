@@ -10,6 +10,8 @@ import {
 import { getAuth } from 'firebase/auth';
 import defaultConfig from '../../firebase-applet-config.json';
 
+import { getRuntimeFirebaseConfig, clearRuntimeConfigCache } from './runtimeConfig';
+
 // Silence internal SDK logs to prevent 10s backend connection timeout warning noise
 setLogLevel('silent');
 
@@ -83,46 +85,7 @@ export interface FirebaseConfigType {
  * 3. Default fallback configuration (firebase-applet-config.json)
  */
 export function getFirebaseConfig(): FirebaseConfigType {
-  if (typeof window !== 'undefined') {
-    const customStr = localStorage.getItem('custom_firebase_config');
-    if (customStr) {
-      try {
-        const parsed = JSON.parse(customStr) as FirebaseConfigType;
-        if (parsed && parsed.projectId && parsed.apiKey) {
-          // If project ID is a custom project, but firestoreDatabaseId is missing or leftover from preview remix, default to '(default)'
-          let dbId = parsed.firestoreDatabaseId ? parsed.firestoreDatabaseId.trim() : '(default)';
-          if (parsed.projectId !== defaultConfig.projectId && (dbId.includes('ai-studio-remix') || dbId.includes('acc88558') || !dbId)) {
-            dbId = '(default)';
-          }
-          return {
-            ...defaultConfig,
-            ...parsed,
-            firestoreDatabaseId: dbId
-          };
-        }
-      } catch (e) {
-        console.warn('Failed to parse custom_firebase_config from localStorage', e);
-      }
-    }
-  }
-
-  // Check Vite environment variables for production hosting deployments (e.g. Vercel, Netlify)
-  const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
-  if (metaEnv && metaEnv.VITE_FIREBASE_PROJECT_ID) {
-    return {
-      projectId: metaEnv.VITE_FIREBASE_PROJECT_ID || defaultConfig.projectId,
-      appId: metaEnv.VITE_FIREBASE_APP_ID || defaultConfig.appId,
-      apiKey: metaEnv.VITE_FIREBASE_API_KEY || defaultConfig.apiKey,
-      authDomain: metaEnv.VITE_FIREBASE_AUTH_DOMAIN || defaultConfig.authDomain,
-      firestoreDatabaseId: metaEnv.VITE_FIREBASE_DATABASE_ID || defaultConfig.firestoreDatabaseId,
-      storageBucket: metaEnv.VITE_FIREBASE_STORAGE_BUCKET || defaultConfig.storageBucket,
-      messagingSenderId: metaEnv.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultConfig.messagingSenderId,
-      measurementId: metaEnv.VITE_FIREBASE_MEASUREMENT_ID || '',
-      recaptchaSiteKey: metaEnv.VITE_FIREBASE_RECAPTCHA_SITE_KEY || ''
-    };
-  }
-
-  return defaultConfig;
+  return getRuntimeFirebaseConfig();
 }
 
 export const activeFirebaseConfig = getFirebaseConfig();
@@ -240,6 +203,7 @@ export function switchFirestoreDatabase(newDbId: string) {
  * Simpan atau ganti konfigurasi kustom Firebase (Custom Database)
  */
 export function saveCustomFirebaseConfig(config: Partial<FirebaseConfigType> | null) {
+  clearRuntimeConfigCache();
   if (!config) {
     localStorage.removeItem('custom_firebase_config');
     localStorage.removeItem('active_firestore_database_id');

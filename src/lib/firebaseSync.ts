@@ -21,6 +21,7 @@ import {
   enableMultiTabIndexedDbPersistence
 } from 'firebase/firestore';
 import { db, auth, activeFirebaseConfig, getActiveDatabaseId } from './firebase';
+import { getRuntimeFirebaseConfig, getRuntimeProjectId } from './runtimeConfig';
 import { store, pauseSyncQueue, resumeSyncQueue, pauseNotifications, resumeNotifications } from './store';
 import { AppUser } from '../models';
 import { filterStudentsForUser, getCurrentUser } from './rbac';
@@ -139,7 +140,7 @@ export interface FirebaseDiagnosticReport {
  */
 export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport> {
   const steps: DiagnosticStepResult[] = [];
-  const config = activeFirebaseConfig;
+  const config = getRuntimeFirebaseConfig();
   const currentDbId = getActiveDatabaseId();
   const currentTenantId = getClassTenantId();
 

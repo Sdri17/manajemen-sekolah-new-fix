@@ -20,6 +20,8 @@ export interface AuditLogEntry {
   new_value?: any;
   persistence_status?: 'PERSISTED_TO_FIRESTORE' | 'LOCAL_ONLY' | 'FIRESTORE_FAILED';
   error_message?: string;
+  propagation_ms?: number;
+  payload_bytes?: number;
 }
 
 function sanitizeValueForAudit(val: any) {
@@ -47,6 +49,20 @@ export async function logAuditEvent(params: {
   try {
     const actor = params.user || getCurrentUser();
     const entryId = uuidv4();
+    const prevSan = params.previous_value ? sanitizeValueForAudit(params.previous_value) : null;
+    const nextSan = params.new_value ? sanitizeValueForAudit(params.new_value) : null;
+    
+    // Estimate payload size in bytes
+    const payloadStr = JSON.stringify({
+      entity: params.entity,
+      details: params.details,
+      prev: prevSan,
+      next: nextSan
+    });
+    const payloadBytes = typeof TextEncoder !== 'undefined' 
+      ? new TextEncoder().encode(payloadStr).length 
+      : payloadStr.length * 2;
+
     const entry: AuditLogEntry = {
       id: entryId,
       timestamp: new Date().toISOString(),
@@ -58,23 +74,30 @@ export async function logAuditEvent(params: {
       entity: params.entity,
       entity_id: params.entity_id || '',
       details: params.details,
-      previous_value: params.previous_value ? sanitizeValueForAudit(params.previous_value) : null,
-      new_value: params.new_value ? sanitizeValueForAudit(params.new_value) : null,
-      persistence_status: params.persistence_status || 'PERSISTED_TO_FIRESTORE'
+      previous_value: prevSan,
+      new_value: nextSan,
+      persistence_status: params.persistence_status || 'PERSISTED_TO_FIRESTORE',
+      payload_bytes: payloadBytes,
+      propagation_ms: 0
     };
 
     // 1. Store in localforage auditLogs store
     await store.auditLogs.setItem(entry.id, entry);
 
     // 2. Asynchronously persist to Firestore 'audit_logs' collection
+    const startTime = performance.now();
     try {
       const targetCol = getTenantCollectionName('audit_logs');
       const docRef = doc(db, targetCol, entry.id);
       await setDoc(docRef, entry);
+      const latencyMs = Math.round(performance.now() - startTime);
+      entry.propagation_ms = latencyMs;
       entry.persistence_status = 'PERSISTED_TO_FIRESTORE';
       await store.auditLogs.setItem(entry.id, entry);
     } catch (fsErr: any) {
+      const latencyMs = Math.round(performance.now() - startTime);
       console.warn('[auditLogger] FireStore write failed, saved locally:', fsErr);
+      entry.propagation_ms = latencyMs;
       entry.persistence_status = 'FIRESTORE_FAILED';
       entry.error_message = fsErr?.message || String(fsErr);
       await store.auditLogs.setItem(entry.id, entry).catch(() => {});
