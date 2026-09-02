@@ -11,6 +11,8 @@ import SyncCountDiagnosticTool from './SyncCountDiagnosticTool';
 import SyncDiagnostics from './SyncDiagnostics';
 import RolePermissionInspector from './RolePermissionInspector';
 import SecurityAuditView from './SecurityAuditView';
+import FirebaseEnvironmentChecker, { FirebaseHeaderStatusBadge } from './FirebaseEnvironmentChecker';
+import FirebaseConfigInspector from './FirebaseConfigInspector';
 import { Users, Activity, ShieldCheck, Lock, Layers, GitCompare, History, UserCheck, ShieldAlert, Calendar } from 'lucide-react';
 import { isUserAdmin, canManageUsers, getCurrentUser } from '../lib/rbac';
 import { AppUser } from '../lib/store';
@@ -54,11 +56,12 @@ export default function AdminManagementPanel({
             <ShieldCheck size={26} />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-xl font-bold text-slate-100">Panel Manajemen Admin & Keamanan</h2>
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-rose-500/20 text-rose-300 border border-rose-500/30">
                 Akses Khusus Admin
               </span>
+              <FirebaseHeaderStatusBadge />
             </div>
             <p className="text-xs text-slate-400 mt-1">
               Kelola pengguna, tentukan izin peran (RBAC), serta pantau audit log perubahan data sistem secara terpusat.
@@ -190,6 +193,8 @@ export default function AdminManagementPanel({
 
       {activeTab === 'diagnostics' && (
         <div className="space-y-8">
+          <FirebaseConfigInspector />
+          <FirebaseEnvironmentChecker />
           <SyncDiagnostics />
           <RolePermissionInspector />
           <SyncCountDiagnosticTool />

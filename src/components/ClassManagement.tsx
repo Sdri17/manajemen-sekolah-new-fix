@@ -124,7 +124,7 @@ export default function ClassManagement() {
     if (studentCount > 0) {
       toast.error(
         `Kelas "${className}" tidak dapat dihapus karena masih ada ${studentCount} siswa terdaftar dalam kelas tersebut. Pindahkan atau hapus siswa di kelas ini terlebih dahulu.`,
-        { duration: 6000 }
+        { duration: 5000 }
       );
       return;
     }

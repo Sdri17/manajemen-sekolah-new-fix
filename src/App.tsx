@@ -365,7 +365,7 @@ function MainAppContent() {
         logout();
         setShowTimeoutModal(false);
         toast.error('Sesi Anda telah berakhir secara otomatis demi keamanan karena tidak ada aktivitas selama 15 menit. Silakan masuk kembali.', {
-          duration: 8000,
+          duration: 5000,
           id: 'session-timeout-toast'
         });
       } else if (elapsed >= WARNING_THRESHOLD_MS) {
@@ -468,7 +468,7 @@ function MainAppContent() {
       const status = recordFailedAttempt();
       setLockoutStatus(status);
       if (status.isLocked) {
-        toast.error(`Batas percobaan login tercapai (5/5). Akses dikunci selama 5 menit untuk keamanan!`, { duration: 6000 });
+        toast.error(`Batas percobaan login tercapai (5/5). Akses dikunci selama 5 menit untuk keamanan!`, { duration: 5000 });
       } else {
         toast.error(`Username atau password salah. Sisa percobaan: ${5 - status.attemptsCount}`);
       }
@@ -536,7 +536,7 @@ function MainAppContent() {
     setOtpSentStatus(true);
     
     // Show OTP in toaster realistically for simulated local environment
-    toast.success(`OTP dikirim ke ${targetEmail}. Kode: ${otp}`, { duration: 10000 });
+    toast.success(`OTP dikirim ke ${targetEmail}. Kode: ${otp}`, { duration: 5000 });
   };
 
   // Verify recovery credentials
@@ -607,7 +607,7 @@ function MainAppContent() {
   if (!user) {
     return (
       <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-4 relative font-sans">
-        <Toaster position="top-right" toastOptions={{ style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }} />
+        <Toaster position="top-right" toastOptions={{ duration: 5000, style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }} />
         <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,rgba(99,102,241,0.08)_0%,transparent_100%)]"></div>
         <div className="bg-slate-800 border border-slate-700/80 p-8 rounded-2xl max-w-md w-full space-y-6 relative z-10 shadow-2xl">
           <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-500/30">
@@ -840,8 +840,7 @@ function MainAppContent() {
 
   return (
     <>
-      <Toaster position="top-right" toastOptions={{ style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }} />
-      <SyncProgressToast isSyncing={isSyncing} />
+      <Toaster position="top-right" toastOptions={{ duration: 5000, style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }} />
       <SessionTimeoutModal
         isOpen={showTimeoutModal}
         remainingSeconds={timeoutRemainingSeconds}

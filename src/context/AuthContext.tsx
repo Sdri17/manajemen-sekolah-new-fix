@@ -3,6 +3,7 @@ import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../lib/firebase';
 import { AppUser, store } from '../lib/store';
 import { getEntityTimestamp, isIncomingDataNewer } from '../lib/firebaseSync';
+import { saveAccountSession } from '../lib/accountSessionCache';
 
 interface AuthContextType {
   user: AppUser | null;
@@ -129,6 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setRole(normalized?.role || null);
     if (normalized) {
       localStorage.setItem('app_user', JSON.stringify(normalized));
+      saveAccountSession(normalized);
     } else {
       localStorage.removeItem('app_user');
     }
@@ -140,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     normalized.updatedAt = normalized.lastModified;
     console.log('[AuthContext] User login action executed:', `@${normalized.username} (${normalized.role})`);
     localStorage.setItem('app_user', JSON.stringify(normalized));
+    saveAccountSession(normalized);
     setUser(normalized);
     setRole(normalized.role);
   }, []);

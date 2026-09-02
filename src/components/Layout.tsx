@@ -5,6 +5,7 @@ import { Settings, AppUser, store } from '../lib/store';
 import { canAccessMenu, canCrudMenu, isUserAdmin, getDisplayRoleLabel, filterStudentsForUser, filterRecordsForUser } from '../lib/rbac';
 import toast from 'react-hot-toast';
 import TaskNotificationWidget from './TaskNotificationWidget';
+import { FirebaseHeaderStatusBadge } from './FirebaseEnvironmentChecker';
 // Helper for resilient lazy loading with auto-retry on transient fetch errors
 function lazyWithRetry<T extends React.ComponentType<any>>(
   importFn: () => Promise<{ default: T }>
@@ -629,6 +630,11 @@ export default function Layout({
             </div>
           </div>
 
+          {/* Visual Indicator for Active Firebase Environment Status (Green: Prod, Red: Dev/Mismatch) */}
+          <div className="hidden sm:block shrink-0">
+            <FirebaseHeaderStatusBadge />
+          </div>
+
           {/* Prominent Current User & Role Indicator Badge in Header with Context Inspector */}
           <div 
             onClick={() => setIsContextInspectorOpen(true)}
@@ -711,207 +717,7 @@ export default function Layout({
               )}
             </button>
 
-            {/* Subtle Sync Status Indicator Badge & Dropdown */}
-            <div className="relative">
-              <div 
-                onClick={() => setIsSyncDropdownOpen(!isSyncDropdownOpen)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-full border cursor-pointer transition-all select-none shadow-sm ${
-                  isSyncing 
-                    ? 'bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20' 
-                    : (syncStats && syncStats.unsyncedCount > 0) 
-                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20' 
-                    : 'bg-slate-800/90 border-slate-700/80 text-slate-300 hover:bg-slate-700/80'
-                }`}
-                title={
-                  isSyncing 
-                    ? "Sedang menyinkronkan data dengan Cloud Firebase... Klik untuk detail" 
-                    : (syncStats && syncStats.unsyncedCount > 0) 
-                    ? `${syncStats.unsyncedCount} perubahan belum terunggah. Klik untuk detail` 
-                    : "Seluruh data tersimpan & tersinkronisasi. Klik untuk menu sinkronisasi"
-                }
-              >
-                <div className="relative flex items-center justify-center shrink-0">
-                  <Cloud 
-                    size={15} 
-                    className={
-                      isSyncing 
-                        ? "text-sky-400 animate-pulse" 
-                        : (syncStats && syncStats.unsyncedCount > 0) 
-                        ? "text-amber-400" 
-                        : "text-emerald-400"
-                    } 
-                  />
-                  <span className="absolute -top-0.5 -right-0.5 flex h-2 w-2">
-                    {isSyncing ? (
-                      <>
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-sky-500"></span>
-                      </>
-                    ) : (syncStats && syncStats.unsyncedCount > 0) ? (
-                      <>
-                        <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-                      </>
-                    ) : (
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400"></span>
-                    )}
-                  </span>
-                </div>
-
-                <span className="text-[11px] font-semibold tracking-wide truncate max-w-[110px] sm:max-w-[150px]">
-                  {isSyncing ? (
-                    <span className="text-sky-300 animate-pulse">Sinkronisasi...</span>
-                  ) : (syncStats && syncStats.unsyncedCount > 0) ? (
-                    <span className="text-amber-300">{syncStats.unsyncedCount} Perubahan</span>
-                  ) : (
-                    <span className="text-emerald-400">Tersinkron</span>
-                  )}
-                </span>
-              </div>
-
-              {/* Dropdown panel */}
-              {isSyncDropdownOpen && (
-                <>
-                  {/* Backdrop */}
-                  <div className="fixed inset-0 z-40" onClick={() => setIsSyncDropdownOpen(false)} />
-                  
-                  <div className="absolute right-0 mt-3 w-80 bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl p-5 shadow-2xl z-50 text-slate-200">
-                    <div className="flex items-center justify-between border-b border-slate-700/60 pb-3 mb-4">
-                      <div className="flex items-center gap-2">
-                        <Cloud size={16} className="text-indigo-400" />
-                        <span className="font-semibold text-sm">Status Sinkronisasi</span>
-                      </div>
-                      <span className="text-[10px] text-emerald-400 uppercase tracking-wider font-semibold flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                        Firebase Cloud
-                      </span>
-                    </div>
-
-                    <>
-                      {/* Granular Progress Bar Component */}
-                      <div className="mb-4">
-                        <SyncProgressBar compact={true} />
-                      </div>
-
-                      {/* Detailed Stats */}
-                      <div className="bg-slate-800/40 border border-slate-800/80 rounded-xl p-3 space-y-2 mb-4 text-xs">
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Total Baris Data:</span>
-                          <span className="font-semibold text-slate-200">{syncStats?.totalItems || 0}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Data Tersinkron:</span>
-                          <span className="font-semibold text-emerald-400">{syncStats?.syncedCount || 0}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Antrean Perubahan:</span>
-                          <span className={`font-semibold ${syncStats && syncStats.unsyncedCount > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
-                            {syncStats?.unsyncedCount || 0} item
-                          </span>
-                        </div>
-                        <div className="flex justify-between border-t border-slate-800/80 pt-2 mt-1">
-                          <span className="text-slate-400">Status Database:</span>
-                          <span className="font-bold flex items-center gap-1 text-emerald-400">
-                            <Wifi size={12} />
-                            <span>Firestore Active</span>
-                          </span>
-                        </div>
-                        <div className="flex justify-between pt-1">
-                          <span className="text-slate-400">Waktu Sinkron:</span>
-                          <span className="font-medium text-indigo-300">
-                            {lastSynced ? lastSynced.toLocaleTimeString('id-ID') : 'Belum sinkron'}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Action buttons */}
-                      <div className="space-y-2 text-xs">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            setIsSyncDropdownOpen(false);
-                            toast.promise(syncData(), {
-                              loading: 'Memaksa sinkronisasi ulang data ke Firebase...',
-                              success: 'Sinkronisasi ulang ke Firebase selesai!',
-                              error: (err) => 'Gagal sinkron: ' + (err?.message || 'Gagal')
-                            });
-                          }}
-                          disabled={isSyncing}
-                          className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/30 rounded-xl text-left font-medium transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-indigo-600/20"
-                        >
-                          <RefreshCw size={15} className={isSyncing ? "animate-spin text-white" : "text-white"} />
-                          <div className="flex-1">
-                            <p className="font-semibold text-white">Paksa Sinkron Ulang Sekarang</p>
-                            <p className="text-[10px] text-indigo-100/80">Kirim seluruh data lokal ke Firebase Cloud</p>
-                          </div>
-                        </button>
-
-                        {role !== 'kepsek' && onFullBackup && (
-                          <button
-                            onClick={async () => {
-                              await onFullBackup();
-                              setIsSyncDropdownOpen(false);
-                            }}
-                            disabled={isSyncing}
-                            className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-indigo-600/10 hover:bg-indigo-600/20 border border-indigo-500/20 rounded-xl text-left text-indigo-300 font-medium transition-all disabled:opacity-50 cursor-pointer"
-                          >
-                            <Cloud size={16} className="text-indigo-400" />
-                            <div className="flex-1">
-                              <p className="font-semibold text-indigo-200">Cadangkan Penuh ke Firebase</p>
-                              <p className="text-[10px] text-indigo-400/80">Salin seluruh database ke Cloud Firestore</p>
-                            </div>
-                          </button>
-                        )}
-
-                        {role !== 'kepsek' && onPullData && (
-                          <button
-                            onClick={async () => {
-                              setIsSyncDropdownOpen(false);
-                              await onPullData();
-                            }}
-                            disabled={isSyncing}
-                            className="w-full flex items-center gap-2.5 px-3 py-2.5 bg-emerald-600/10 hover:bg-emerald-600/20 border border-emerald-500/20 rounded-xl text-left text-emerald-300 font-medium transition-all disabled:opacity-50 cursor-pointer"
-                          >
-                            <Cloud size={16} className="text-emerald-400" />
-                            <div className="flex-1">
-                              <p className="font-semibold text-emerald-200">Ambil Data dari Firebase</p>
-                              <p className="text-[10px] text-emerald-400/80">Pulihkan/timpa dari Cloud Firestore</p>
-                            </div>
-                          </button>
-                        )}
-                      </div>
-                    </>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleLocalBackup();
-                        setIsSyncDropdownOpen(false);
-                      }}
-                      className="w-full flex items-center gap-2 px-3 py-2 bg-slate-800/40 hover:bg-slate-800 border border-slate-700/30 rounded-xl text-left text-slate-300 transition-all cursor-pointer mt-2"
-                    >
-                      <Download size={14} className="text-slate-400" />
-                      <span className="font-medium text-[11px]">Unduh File Backup (JSON Lokal)</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsSyncDropdownOpen(false);
-                        setIsDbConnectModalOpen(true);
-                      }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 rounded-xl text-left text-indigo-300 transition-all cursor-pointer mt-2"
-                    >
-                      <Database size={14} className="text-indigo-400" />
-                      <div className="flex-1">
-                        <p className="font-semibold text-[11px] text-indigo-200">Hubungkan Database & Hosting</p>
-                        <p className="text-[10px] text-indigo-400/80">Copy .env / Set custom Firestore anti-ribet</p>
-                      </div>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            {/* Removed database sync status badge per user request */}
             <button
               type="button"
               onClick={() => setIsDbConnectModalOpen(true)}

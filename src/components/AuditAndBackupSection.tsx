@@ -197,7 +197,7 @@ export default function AuditAndBackupSection() {
 
         runAudit();
 
-        toast.success(`Berhasil memulihkan ${totalRestored} data (${collectionsRestored.join(', ')}) ke database!`, { id: toastId, duration: 6000 });
+        toast.success(`Berhasil memulihkan ${totalRestored} data (${collectionsRestored.join(', ')}) ke database!`, { id: toastId, duration: 5000 });
       } catch (err: any) {
         toast.error('Gagal memulihkan backup: ' + (err?.message || err), { id: toastId });
       } finally {

@@ -22,6 +22,17 @@ import {
 } from 'firebase/firestore';
 import { db, auth, activeFirebaseConfig, getActiveDatabaseId } from './firebase';
 import { getRuntimeFirebaseConfig, getRuntimeProjectId } from './runtimeConfig';
+import { 
+  getRemoteFirebaseConfig, 
+  fetchRemoteFirebaseConfig, 
+  subscribeRemoteConfigChange, 
+  startRemoteConfigPolling 
+} from './remoteConfigLoader';
+import { 
+  saveAccountSession, 
+  getAccountLastSyncTs, 
+  updateAccountLastSyncTs 
+} from './accountSessionCache';
 import { store, pauseSyncQueue, resumeSyncQueue, pauseNotifications, resumeNotifications } from './store';
 import { AppUser } from '../models';
 import { filterStudentsForUser, getCurrentUser } from './rbac';
@@ -112,6 +123,23 @@ export async function clearSyncAuditLogs(): Promise<void> {
   }
 }
 
+// Subscribe to public/firebase-applet-config.json changes via polling
+if (typeof window !== 'undefined') {
+  startRemoteConfigPolling(15000);
+  subscribeRemoteConfigChange((newConfig, oldConfig) => {
+    console.log('[firebaseSync] Dynamic config change detected in public/firebase-applet-config.json:', {
+      newProjectId: newConfig.projectId,
+      oldProjectId: oldConfig?.projectId
+    });
+    recordSyncAuditLog({
+      type: 'DIAGNOSTIC',
+      status: 'SUCCESS',
+      title: 'Perubahan Remote Firebase Config',
+      details: `Deteksi perubahan file public/firebase-applet-config.json via polling. Project ID baru: ${newConfig.projectId}`
+    });
+  });
+}
+
 export interface DiagnosticStepResult {
   step: 'internet' | 'config' | 'server_reachability' | 'rules_write_read';
   name: string;
@@ -140,7 +168,7 @@ export interface FirebaseDiagnosticReport {
  */
 export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport> {
   const steps: DiagnosticStepResult[] = [];
-  const config = getRuntimeFirebaseConfig();
+  const config = (await fetchRemoteFirebaseConfig()) || getRemoteFirebaseConfig() || getRuntimeFirebaseConfig();
   const currentDbId = getActiveDatabaseId();
   const currentTenantId = getClassTenantId();
 
@@ -1920,7 +1948,10 @@ export async function pullAllRemoteDataFromFirebase(
 
           const targetCol = getPartitionedCollectionName(storeName);
           const colRef = collection(db, targetCol);
-          let lastPullTs = typeof window !== 'undefined' ? localStorage.getItem(`edusync_last_pull_ts_${targetCol}`) : null;
+          
+          // Check per-account last sync timestamp from Cookie/Storage first
+          const accountSyncTs = currentUser?.id ? getAccountLastSyncTs(currentUser.id) : null;
+          let lastPullTs = accountSyncTs || (typeof window !== 'undefined' ? localStorage.getItem(`edusync_last_pull_ts_${targetCol}`) : null);
 
           // Compute latest timestamp from local IndexedDB store if lastPullTs is missing
           if (!forceFullPull && !lastPullTs) {
@@ -2134,6 +2165,11 @@ export async function pullAllRemoteDataFromFirebase(
 
     // Clear unsynced queue after pulling latest state
     await store.syncQueue.clear().catch(() => {});
+
+    // Update account sync timestamp in Cookie and LocalStorage for incremental cross-device sync
+    if (currentUser?.id) {
+      updateAccountLastSyncTs(currentUser.id, currentPullTimestamp);
+    }
 
     if (hasAnyChanges && typeof window !== 'undefined') {
       bufferRemoteDataUpdate('all', totalUpdated);
