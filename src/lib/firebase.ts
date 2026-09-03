@@ -11,6 +11,7 @@ import { getAuth } from 'firebase/auth';
 import defaultConfig from '../../firebase-applet-config.json';
 
 import { getRuntimeFirebaseConfig, clearRuntimeConfigCache } from './runtimeConfig';
+import { getCookie, setCookie, eraseCookie } from './accountSessionCache';
 
 // Silence internal SDK logs to prevent 10s backend connection timeout warning noise
 setLogLevel('silent');
@@ -96,19 +97,37 @@ export const auth = getAuth(app);
 
 /**
  * Mendapatkan Database ID Firestore yang sedang aktif
- * (Memeriksa localStorage jika wali kelas pernah memilih database kelas tertentu)
+ * (Memeriksa Cookie dan localStorage agar tersinkronisasi di perangkat/sesi lain)
  */
 export function getActiveDatabaseId(): string {
   if (typeof window !== 'undefined') {
+    // 1. Check Cookie first
+    const cookieDb = getCookie('edusync_active_firestore_database_id');
+    if (cookieDb && cookieDb.trim()) {
+      const trimmed = cookieDb.trim();
+      if (!trimmed.includes('ai-studio-remix') && !trimmed.includes('acc88558')) {
+        return trimmed;
+      }
+    }
+
+    // 2. Check localStorage
     const customDb = localStorage.getItem('active_firestore_database_id');
     if (customDb && customDb.trim()) {
       const trimmed = customDb.trim();
       // If the active config belongs to user's custom project or doesn't match old remix ID, clear stale ID
       if (trimmed.includes('ai-studio-remix') || trimmed.includes('acc88558')) {
-        try { localStorage.removeItem('active_firestore_database_id'); } catch (_e) {}
+        try { 
+          localStorage.removeItem('active_firestore_database_id'); 
+          eraseCookie('edusync_active_firestore_database_id');
+        } catch (_e) {}
         return activeFirebaseConfig.firestoreDatabaseId || '(default)';
       }
       return trimmed;
+    }
+
+    // 3. Check Vite Environment Variable
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_FIREBASE_DATABASE_ID) {
+      return (import.meta as any).env.VITE_FIREBASE_DATABASE_ID;
     }
   }
   return activeFirebaseConfig.firestoreDatabaseId || '(default)';
@@ -192,6 +211,7 @@ if (typeof window !== 'undefined') {
 export function switchFirestoreDatabase(newDbId: string) {
   const cleanDbId = newDbId.trim() || '(default)';
   localStorage.setItem('active_firestore_database_id', cleanDbId);
+  setCookie('edusync_active_firestore_database_id', cleanDbId, 30);
   db = createFirestoreInstance(cleanDbId);
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('database-switched', { detail: { databaseId: cleanDbId } }));
@@ -207,8 +227,16 @@ export function saveCustomFirebaseConfig(config: Partial<FirebaseConfigType> | n
   if (!config) {
     localStorage.removeItem('custom_firebase_config');
     localStorage.removeItem('active_firestore_database_id');
+    eraseCookie('edusync_custom_firebase_config');
+    eraseCookie('edusync_active_firestore_database_id');
   } else {
-    localStorage.setItem('custom_firebase_config', JSON.stringify(config));
+    const jsonStr = JSON.stringify(config);
+    localStorage.setItem('custom_firebase_config', jsonStr);
+    setCookie('edusync_custom_firebase_config', jsonStr, 30);
+    if (config.firestoreDatabaseId) {
+      localStorage.setItem('active_firestore_database_id', config.firestoreDatabaseId);
+      setCookie('edusync_active_firestore_database_id', config.firestoreDatabaseId, 30);
+    }
   }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('firebase-config-changed', { detail: config }));

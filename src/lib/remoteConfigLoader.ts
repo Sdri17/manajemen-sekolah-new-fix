@@ -1,4 +1,5 @@
 import defaultConfig from '../../firebase-applet-config.json';
+import { getCookie } from './accountSessionCache';
 
 export interface FirebaseConfigType {
   projectId: string;
@@ -28,6 +29,41 @@ type ConfigChangeListener = (newConfig: FirebaseConfigType, oldConfig: FirebaseC
 const changeListeners: Set<ConfigChangeListener> = new Set();
 
 /**
+ * Gets Firebase config defined via Vite environment variables (e.g., on Vercel)
+ */
+function getViteEnvConfig(): Partial<FirebaseConfigType> | null {
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+    const env = (import.meta as any).env;
+    if (env.VITE_FIREBASE_PROJECT_ID && env.VITE_FIREBASE_API_KEY) {
+      return {
+        projectId: env.VITE_FIREBASE_PROJECT_ID,
+        apiKey: env.VITE_FIREBASE_API_KEY,
+        authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || `${env.VITE_FIREBASE_PROJECT_ID}.firebaseapp.com`,
+        appId: env.VITE_FIREBASE_APP_ID || '',
+        firestoreDatabaseId: env.VITE_FIREBASE_DATABASE_ID || '(default)',
+        storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || `${env.VITE_FIREBASE_PROJECT_ID}.appspot.com`,
+        messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '',
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Gets Firebase config stored in Cookie
+ */
+function getCookieCustomConfig(): Partial<FirebaseConfigType> | null {
+  const cookieVal = getCookie('edusync_custom_firebase_config');
+  if (cookieVal) {
+    try {
+      const parsed = JSON.parse(cookieVal);
+      if (parsed && parsed.projectId) return parsed;
+    } catch (_e) {}
+  }
+  return null;
+}
+
+/**
  * Compares two Firebase config objects to determine if any key configuration parameter has changed.
  */
 export function isConfigDifferent(cfg1: Partial<FirebaseConfigType> | null, cfg2: Partial<FirebaseConfigType> | null): boolean {
@@ -50,6 +86,36 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
     return (defaultConfig as FirebaseConfigType);
   }
 
+  // Priority 0: LocalStorage or Cookie Override for current device/browser session
+  const cookieCustom = getCookieCustomConfig();
+  const localCustomStr = localStorage.getItem('custom_firebase_config');
+  let customObj: any = cookieCustom;
+  if (!customObj && localCustomStr) {
+    try { customObj = JSON.parse(localCustomStr); } catch (_e) {}
+  }
+
+  if (customObj && customObj.projectId && customObj.apiKey) {
+    remoteConfigCache = customObj as FirebaseConfigType;
+    return remoteConfigCache;
+  }
+
+  // Priority 1: Vite Environment variables (e.g. set in Vercel settings)
+  const viteEnv = getViteEnvConfig();
+  if (viteEnv && viteEnv.projectId && viteEnv.apiKey) {
+    const fullEnvConfig: FirebaseConfigType = {
+      projectId: viteEnv.projectId,
+      apiKey: viteEnv.apiKey,
+      authDomain: viteEnv.authDomain || `${viteEnv.projectId}.firebaseapp.com`,
+      appId: viteEnv.appId || '',
+      firestoreDatabaseId: viteEnv.firestoreDatabaseId || '(default)',
+      storageBucket: viteEnv.storageBucket || `${viteEnv.projectId}.appspot.com`,
+      messagingSenderId: viteEnv.messagingSenderId || '',
+    };
+    remoteConfigCache = fullEnvConfig;
+    return fullEnvConfig;
+  }
+
+  // Priority 2: Fetch public /firebase-applet-config.json with cache buster
   try {
     const response = await fetch(`/firebase-applet-config.json?t=${Date.now()}`, {
       cache: 'no-store',
@@ -90,25 +156,13 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
     console.warn('[remoteConfigLoader] Error fetching remote firebase-applet-config.json, falling back:', error);
   }
 
-  // Fallback 1: localStorage override
-  const localCustom = localStorage.getItem('custom_firebase_config');
-  if (localCustom) {
-    try {
-      const parsed = JSON.parse(localCustom);
-      if (parsed && parsed.projectId) {
-        remoteConfigCache = parsed;
-        return parsed;
-      }
-    } catch (_e) {}
-  }
-
-  // Fallback 2: Default bundled JSON
+  // Priority 3: Default bundled JSON
   remoteConfigCache = defaultConfig as FirebaseConfigType;
   return remoteConfigCache;
 }
 
 /**
- * Synchronously retrieves cached remote configuration object or falls back to local storage/bundled defaults.
+ * Synchronously retrieves cached remote configuration object or falls back to local storage/cookie/bundled defaults.
  */
 export function getRemoteFirebaseConfig(): FirebaseConfigType {
   if (remoteConfigCache) {
@@ -116,6 +170,11 @@ export function getRemoteFirebaseConfig(): FirebaseConfigType {
   }
   
   if (typeof window !== 'undefined') {
+    const cookieCustom = getCookieCustomConfig();
+    if (cookieCustom && cookieCustom.projectId) {
+      return cookieCustom as FirebaseConfigType;
+    }
+
     const localCustom = localStorage.getItem('custom_firebase_config');
     if (localCustom) {
       try {
@@ -124,6 +183,19 @@ export function getRemoteFirebaseConfig(): FirebaseConfigType {
           return parsed;
         }
       } catch (_e) {}
+    }
+
+    const viteEnv = getViteEnvConfig();
+    if (viteEnv && viteEnv.projectId && viteEnv.apiKey) {
+      return {
+        projectId: viteEnv.projectId,
+        apiKey: viteEnv.apiKey,
+        authDomain: viteEnv.authDomain || `${viteEnv.projectId}.firebaseapp.com`,
+        appId: viteEnv.appId || '',
+        firestoreDatabaseId: viteEnv.firestoreDatabaseId || '(default)',
+        storageBucket: viteEnv.storageBucket || `${viteEnv.projectId}.appspot.com`,
+        messagingSenderId: viteEnv.messagingSenderId || '',
+      };
     }
   }
 

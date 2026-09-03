@@ -238,15 +238,21 @@ export default function FirebaseConfigInspector() {
                 : 'Terdapat perbedaan nilai parameter antara file `public/firebase-applet-config.json` di server Vercel dengan instance SDK saat ini. Klik tombol "Refresh Config" untuk menyinkronkan ulang tanpa mendaur ulang halaman.'}
             </p>
             {lastChecked && (
-              <p className="text-[11px] opacity-75 flex items-center gap-1.5 pt-1">
-                <Clock size={12} />
-                <span>Pengecekan Terakhir: {lastChecked.toLocaleTimeString('id-ID')}</span>
-                {autoDetectCount > 0 && (
-                  <span className="ml-2 px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono text-[10px]">
-                    Deteksi Otomatis Polling: {autoDetectCount}x
-                  </span>
-                )}
-              </p>
+              <div className="pt-1.5 space-y-1 text-[11px] opacity-80">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Clock size={12} className="text-indigo-400" />
+                  <span>Pengecekan Terakhir: <strong className="text-white">{lastChecked.toLocaleTimeString('id-ID')}</strong></span>
+                  {autoDetectCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono text-[10px]">
+                      Deteksi Polling: {autoDetectCount}x
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-[10px] text-indigo-300 bg-indigo-950/60 px-2 py-1 rounded-lg border border-indigo-800/50 w-fit">
+                  <Sparkles size={11} className="text-amber-400 shrink-0" />
+                  <span>Cache-Bust Fetch URL: <code className="text-amber-300">/firebase-applet-config.json?t={lastChecked.getTime()}</code></span>
+                </div>
+              </div>
             )}
           </div>
         </div>
