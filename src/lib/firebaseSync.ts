@@ -20,13 +20,15 @@ import {
   enableIndexedDbPersistence,
   enableMultiTabIndexedDbPersistence
 } from 'firebase/firestore';
-import { db, auth, activeFirebaseConfig, getActiveDatabaseId } from './firebase';
+import { db, auth, activeFirebaseConfig, getActiveDatabaseId, switchFirestoreDatabase } from './firebase';
 import { getRuntimeFirebaseConfig, getRuntimeProjectId } from './runtimeConfig';
 import { 
   getRemoteFirebaseConfig, 
   fetchRemoteFirebaseConfig, 
   subscribeRemoteConfigChange, 
-  startRemoteConfigPolling 
+  startRemoteConfigPolling,
+  isConfigDifferent,
+  FirebaseConfigType
 } from './remoteConfigLoader';
 import { 
   saveAccountSession, 
@@ -123,21 +125,124 @@ export async function clearSyncAuditLogs(): Promise<void> {
   }
 }
 
-// Subscribe to public/firebase-applet-config.json changes via polling
-if (typeof window !== 'undefined') {
-  startRemoteConfigPolling(15000);
-  subscribeRemoteConfigChange((newConfig, oldConfig) => {
+export interface FirebaseConfigUpdateEventDetail {
+  newConfig: FirebaseConfigType;
+  oldConfig: FirebaseConfigType | null;
+  detectedAt: string;
+}
+
+let pendingConfigUpdate: FirebaseConfigType | null = null;
+
+export function getPendingConfigUpdate(): FirebaseConfigType | null {
+  return pendingConfigUpdate;
+}
+
+export function clearPendingConfigUpdate() {
+  pendingConfigUpdate = null;
+}
+
+/**
+ * Config Loader in 'src/lib/firebaseSync.ts':
+ * Appends a cache-busting timestamp (fetch(`/firebase-applet-config.json?t=${Date.now()}`)) to the request.
+ * Ensures that Firebase initialization logic waits for this fetch to complete successfully before attempting to connect,
+ * preventing the use of stale or default configuration values during the initial app load.
+ */
+export async function loadFirebaseConfigAsync(): Promise<FirebaseConfigType> {
+  if (typeof window === 'undefined') {
+    return getRemoteFirebaseConfig();
+  }
+
+  try {
+    const timestamp = Date.now();
+    const response = await fetch(`/firebase-applet-config.json?t=${timestamp}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.projectId && data.apiKey) {
+        const config: FirebaseConfigType = {
+          projectId: data.projectId,
+          appId: data.appId || '',
+          apiKey: data.apiKey || '',
+          authDomain: data.authDomain || `${data.projectId}.firebaseapp.com`,
+          firestoreDatabaseId: data.firestoreDatabaseId || '(default)',
+          storageBucket: data.storageBucket || `${data.projectId}.appspot.com`,
+          messagingSenderId: data.messagingSenderId || '',
+          measurementId: data.measurementId || '',
+          recaptchaSiteKey: data.recaptchaSiteKey || ''
+        };
+
+        if (isConfigDifferent(activeFirebaseConfig, config)) {
+          console.log(`[firebaseSync] Loaded fresh config with cache-buster ?t=${timestamp}. Project ID: "${config.projectId}", Database ID: "${config.firestoreDatabaseId}"`);
+          Object.assign(activeFirebaseConfig, config);
+          const targetDbId = config.firestoreDatabaseId || '(default)';
+          if (getActiveDatabaseId() !== targetDbId) {
+            switchFirestoreDatabase(targetDbId);
+          }
+        }
+
+        return config;
+      }
+    }
+  } catch (err) {
+    console.warn('[firebaseSync] Error fetching /firebase-applet-config.json with cache-busting timestamp:', err);
+  }
+
+  return fetchRemoteFirebaseConfig();
+}
+
+/**
+ * Lightweight polling service that checks for updates to 'public/firebase-applet-config.json'
+ * every 60 seconds without refreshing the whole app.
+ */
+export function startFirebaseConfigPolling(intervalMs: number = 60000): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  const stopPolling = startRemoteConfigPolling(intervalMs);
+
+  const unsubscribe = subscribeRemoteConfigChange((newConfig, oldConfig) => {
     console.log('[firebaseSync] Dynamic config change detected in public/firebase-applet-config.json:', {
       newProjectId: newConfig.projectId,
       oldProjectId: oldConfig?.projectId
     });
+
     recordSyncAuditLog({
       type: 'DIAGNOSTIC',
       status: 'SUCCESS',
-      title: 'Perubahan Remote Firebase Config',
-      details: `Deteksi perubahan file public/firebase-applet-config.json via polling. Project ID baru: ${newConfig.projectId}`
+      title: 'Perubahan Remote Firebase Config (Polling 60s)',
+      details: `Deteksi perubahan file public/firebase-applet-config.json via polling 60 detik. Project ID baru: ${newConfig.projectId}`
     });
+
+    pendingConfigUpdate = newConfig;
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent<FirebaseConfigUpdateEventDetail>('firebase-config-update-detected', {
+          detail: {
+            newConfig,
+            oldConfig,
+            detectedAt: new Date().toLocaleTimeString('id-ID')
+          }
+        })
+      );
+    }
   });
+
+  return () => {
+    unsubscribe();
+    stopPolling();
+  };
+}
+
+// Auto-start lightweight polling service every 60 seconds in browser environment
+if (typeof window !== 'undefined') {
+  loadFirebaseConfigAsync().catch(() => {});
+  startFirebaseConfigPolling(60000);
 }
 
 export interface DiagnosticStepResult {
@@ -168,7 +273,7 @@ export interface FirebaseDiagnosticReport {
  */
 export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport> {
   const steps: DiagnosticStepResult[] = [];
-  const config = (await fetchRemoteFirebaseConfig()) || getRemoteFirebaseConfig() || getRuntimeFirebaseConfig();
+  const config = (await loadFirebaseConfigAsync()) || (await fetchRemoteFirebaseConfig()) || getRemoteFirebaseConfig() || getRuntimeFirebaseConfig();
   const currentDbId = getActiveDatabaseId();
   const currentTenantId = getClassTenantId();
 
@@ -1349,6 +1454,9 @@ export async function pushAllLocalDataToFirebase(
   const pushStartIso = new Date().toISOString();
 
   try {
+    // Wait for config fetch with cache-busting timestamp to complete before pushing
+    await loadFirebaseConfigAsync().catch(() => {});
+
     firebaseStatus = 'syncing';
     notifyFirebaseStatusChanged();
 
@@ -1880,6 +1988,9 @@ export async function pullAllRemoteDataFromFirebase(
   const pullStartTime = performance.now();
   const currentPullTimestamp = new Date().toISOString();
   try {
+    // Wait for config fetch with cache-busting timestamp to complete before pulling
+    await loadFirebaseConfigAsync().catch(() => {});
+
     firebaseStatus = 'syncing';
     notifyFirebaseStatusChanged();
 
@@ -2297,8 +2408,16 @@ const unsubscribers: Array<() => void> = [];
  * Master Data (Guru, Siswa, Profil, Jadwal, Nilai) uses Fetch-Once (getDocs/delta pull)
  * to avoid disruptive real-time form resets and unwanted re-renders.
  */
-export function initFirebaseRealtimeSync() {
+export async function initFirebaseRealtimeSync() {
   if (isFirebaseSyncActive) return;
+
+  // Ensure Firebase initialization logic waits for config fetch with cache-busting timestamp to complete before connecting
+  try {
+    await loadFirebaseConfigAsync();
+  } catch (err) {
+    console.warn('[firebaseSync] Pre-initialization config load warning:', err);
+  }
+
   isFirebaseSyncActive = true;
   firebaseStatus = 'syncing';
   notifyFirebaseStatusChanged();

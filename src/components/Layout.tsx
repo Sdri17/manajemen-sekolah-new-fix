@@ -6,6 +6,7 @@ import { canAccessMenu, canCrudMenu, isUserAdmin, getDisplayRoleLabel, filterStu
 import toast from 'react-hot-toast';
 import TaskNotificationWidget from './TaskNotificationWidget';
 import { FirebaseHeaderStatusBadge } from './FirebaseEnvironmentChecker';
+import FirebaseConfigUpdateBanner from './FirebaseConfigUpdateBanner';
 // Helper for resilient lazy loading with auto-retry on transient fetch errors
 function lazyWithRetry<T extends React.ComponentType<any>>(
   importFn: () => Promise<{ default: T }>
@@ -588,6 +589,7 @@ export default function Layout({
 
       {/* Main Content */}
       <main className="flex-1 flex flex-col relative z-10 min-w-0">
+        <FirebaseConfigUpdateBanner />
         <header className="min-h-[4.25rem] bg-slate-900/60 backdrop-blur-md border-b border-slate-700/50 px-3 sm:px-6 py-2.5 flex flex-wrap lg:flex-nowrap items-center justify-between shrink-0 z-30 relative gap-2 sm:gap-3 print:hidden">
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button 

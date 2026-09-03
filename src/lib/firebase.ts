@@ -11,6 +11,7 @@ import { getAuth } from 'firebase/auth';
 import defaultConfig from '../../firebase-applet-config.json';
 
 import { getRuntimeFirebaseConfig, clearRuntimeConfigCache } from './runtimeConfig';
+import { subscribeRemoteConfigChange } from './remoteConfigLoader';
 import { getCookie, setCookie, eraseCookie } from './accountSessionCache';
 
 // Silence internal SDK logs to prevent 10s backend connection timeout warning noise
@@ -200,9 +201,18 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate connection on boot
+// Validate connection and listen for live remote config updates
 if (typeof window !== 'undefined') {
-  // Connection validated automatically by Firestore SDK
+  subscribeRemoteConfigChange((newConfig) => {
+    if (newConfig && newConfig.projectId) {
+      Object.assign(activeFirebaseConfig, newConfig);
+      const targetDbId = newConfig.firestoreDatabaseId || '(default)';
+      console.log(`[firebase.ts] Dynamic remote config sync received. Target DB ID: "${targetDbId}"`);
+      if (getActiveDatabaseId() !== targetDbId) {
+        switchFirestoreDatabase(targetDbId);
+      }
+    }
+  });
 }
 
 /**

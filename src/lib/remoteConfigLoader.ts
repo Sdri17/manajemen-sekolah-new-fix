@@ -79,43 +79,14 @@ export function isConfigDifferent(cfg1: Partial<FirebaseConfigType> | null, cfg2
 
 /**
  * Fetches the firebase-applet-config.json file directly from the public root using a standard fetch request
- * with a cache-busting timestamp to immediately respect dashboard updates across all devices.
+ * with a cache-busting timestamp to immediately respect updates on Vercel deployments across all devices.
  */
 export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
   if (typeof window === 'undefined') {
     return (defaultConfig as FirebaseConfigType);
   }
 
-  // Priority 0: LocalStorage or Cookie Override for current device/browser session
-  const cookieCustom = getCookieCustomConfig();
-  const localCustomStr = localStorage.getItem('custom_firebase_config');
-  let customObj: any = cookieCustom;
-  if (!customObj && localCustomStr) {
-    try { customObj = JSON.parse(localCustomStr); } catch (_e) {}
-  }
-
-  if (customObj && customObj.projectId && customObj.apiKey) {
-    remoteConfigCache = customObj as FirebaseConfigType;
-    return remoteConfigCache;
-  }
-
-  // Priority 1: Vite Environment variables (e.g. set in Vercel settings)
-  const viteEnv = getViteEnvConfig();
-  if (viteEnv && viteEnv.projectId && viteEnv.apiKey) {
-    const fullEnvConfig: FirebaseConfigType = {
-      projectId: viteEnv.projectId,
-      apiKey: viteEnv.apiKey,
-      authDomain: viteEnv.authDomain || `${viteEnv.projectId}.firebaseapp.com`,
-      appId: viteEnv.appId || '',
-      firestoreDatabaseId: viteEnv.firestoreDatabaseId || '(default)',
-      storageBucket: viteEnv.storageBucket || `${viteEnv.projectId}.appspot.com`,
-      messagingSenderId: viteEnv.messagingSenderId || '',
-    };
-    remoteConfigCache = fullEnvConfig;
-    return fullEnvConfig;
-  }
-
-  // Priority 2: Fetch public /firebase-applet-config.json with cache buster
+  // Priority 1 (Highest): Always fetch live public /firebase-applet-config.json directly from server
   try {
     const response = await fetch(`/firebase-applet-config.json?t=${Date.now()}`, {
       cache: 'no-store',
@@ -141,22 +112,64 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
         };
 
         const oldConfig = remoteConfigCache;
+
+        // Clean up any stale localStorage override if server project/database ID has changed
+        const localCustomStr = localStorage.getItem('custom_firebase_config');
+        if (localCustomStr) {
+          try {
+            const parsed = JSON.parse(localCustomStr);
+            if (parsed && (parsed.projectId !== config.projectId || parsed.firestoreDatabaseId !== config.firestoreDatabaseId)) {
+              console.log('[remoteConfigLoader] Purging stale localStorage custom_firebase_config to sync with live server configuration');
+              localStorage.removeItem('custom_firebase_config');
+              localStorage.removeItem('active_firestore_database_id');
+            }
+          } catch (_e) {}
+        }
+
+        remoteConfigCache = config;
+
         if (oldConfig && isConfigDifferent(oldConfig, config)) {
-          console.log('[remoteConfigLoader] Config change detected in firebase-applet-config.json! New Project ID:', config.projectId);
-          remoteConfigCache = config;
+          console.log('[remoteConfigLoader] Config change detected in live /firebase-applet-config.json! New Project ID:', config.projectId, 'Database ID:', config.firestoreDatabaseId);
           notifyListeners(config, oldConfig);
-        } else {
-          remoteConfigCache = config;
         }
 
         return config;
       }
     }
   } catch (error: any) {
-    console.warn('[remoteConfigLoader] Error fetching remote firebase-applet-config.json, falling back:', error);
+    console.warn('[remoteConfigLoader] Error fetching live /firebase-applet-config.json, falling back:', error);
   }
 
-  // Priority 3: Default bundled JSON
+  // Priority 2: LocalStorage or Cookie Override for user-configured custom database
+  const cookieCustom = getCookieCustomConfig();
+  const localCustomStr = localStorage.getItem('custom_firebase_config');
+  let customObj: any = cookieCustom;
+  if (!customObj && localCustomStr) {
+    try { customObj = JSON.parse(localCustomStr); } catch (_e) {}
+  }
+
+  if (customObj && customObj.projectId && customObj.apiKey) {
+    remoteConfigCache = customObj as FirebaseConfigType;
+    return remoteConfigCache;
+  }
+
+  // Priority 3: Vite Environment variables (e.g. set in Vercel settings)
+  const viteEnv = getViteEnvConfig();
+  if (viteEnv && viteEnv.projectId && viteEnv.apiKey) {
+    const fullEnvConfig: FirebaseConfigType = {
+      projectId: viteEnv.projectId,
+      apiKey: viteEnv.apiKey,
+      authDomain: viteEnv.authDomain || `${viteEnv.projectId}.firebaseapp.com`,
+      appId: viteEnv.appId || '',
+      firestoreDatabaseId: viteEnv.firestoreDatabaseId || '(default)',
+      storageBucket: viteEnv.storageBucket || `${viteEnv.projectId}.appspot.com`,
+      messagingSenderId: viteEnv.messagingSenderId || '',
+    };
+    remoteConfigCache = fullEnvConfig;
+    return fullEnvConfig;
+  }
+
+  // Priority 4: Default bundled JSON
   remoteConfigCache = defaultConfig as FirebaseConfigType;
   return remoteConfigCache;
 }
