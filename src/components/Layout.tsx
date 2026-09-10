@@ -633,9 +633,9 @@ export default function Layout({
             </div>
           </div>
 
-          {/* Visual Indicator for Active Firebase Environment Status (Green: Prod, Red: Dev/Mismatch) */}
-          <div className="hidden sm:block shrink-0">
-            <FirebaseHeaderStatusBadge />
+          {/* Visual Indicator for Active Firebase Environment Status */}
+          <div className="shrink-0">
+            <FirebaseHeaderStatusBadge onOpenModal={() => setIsDbConnectModalOpen(true)} />
           </div>
 
           {/* Prominent Current User & Role Indicator Badge in Header with Context Inspector */}

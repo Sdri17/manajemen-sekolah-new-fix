@@ -5,7 +5,7 @@ import {
   ExternalLink, RefreshCw, Key, ShieldCheck, Zap, Server, Globe, HelpCircle, X,
   Radio, FileCode, Sliders, ArrowRight, RotateCcw, Share2
 } from 'lucide-react';
-import { activeFirebaseConfig, getFirebaseConfig, saveCustomFirebaseConfig, FirebaseConfigType } from '../lib/firebase';
+import { activeFirebaseConfig, getFirebaseConfig, saveCustomFirebaseConfig, reinitializeFirebaseServices, getActiveDatabaseId, FirebaseConfigType } from '../lib/firebase';
 import { getLatencySummary, pullAllRemoteDataFromFirebase, pushAllLocalDataToFirebase } from '../lib/firebaseSync';
 import FirebaseDiagnosticAndLogs from './FirebaseDiagnosticAndLogs';
 import toast from 'react-hot-toast';
@@ -16,10 +16,13 @@ interface DatabaseConnectModalProps {
 }
 
 export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnectModalProps) {
-  const [activeTab, setActiveTab] = useState<'status' | 'env' | 'custom' | 'guide'>('status');
+  const [activeTab, setActiveTab] = useState<'quick_switch' | 'status' | 'env' | 'custom' | 'guide'>('quick_switch');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [latencyMetrics, setLatencyMetrics] = useState(() => getLatencySummary());
+
+  // Quick Switch Database State
+  const [targetDatabaseId, setTargetDatabaseId] = useState<string>(() => getActiveDatabaseId());
 
   // Custom Config Form State
   const [customConfig, setCustomConfig] = useState<FirebaseConfigType>(() => getFirebaseConfig());
@@ -27,6 +30,23 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
   const [hasCustomConfig, setHasCustomConfig] = useState<boolean>(() => {
     return typeof window !== 'undefined' && !!localStorage.getItem('custom_firebase_config');
   });
+
+  const handleApplyDatabaseId = (dbIdToApply: string) => {
+    const trimmed = dbIdToApply.trim() || '(default)';
+    
+    // Save to localStorage and cookie
+    localStorage.setItem('active_firestore_database_id', trimmed);
+    
+    // Update active config
+    const currentConfig = getFirebaseConfig();
+    currentConfig.firestoreDatabaseId = trimmed;
+    
+    saveCustomFirebaseConfig(currentConfig);
+    reinitializeFirebaseServices(currentConfig);
+    setTargetDatabaseId(trimmed);
+
+    toast.success(`🎉 Database berhasil dialihkan ke ID '${trimmed}'! Header dan Firestore telah terhubung.`);
+  };
 
   const handleAutoParseSnippet = (rawText: string) => {
     setPastedSnippet(rawText);
@@ -228,6 +248,17 @@ VITE_FIREBASE_MESSAGING_SENDER_ID="${activeFirebaseConfig.messagingSenderId}"`;
         {/* Tab Navigation */}
         <div className="flex border-b border-slate-700/70 bg-slate-950/40 px-5 gap-2 overflow-x-auto">
           <button
+            onClick={() => setActiveTab('quick_switch')}
+            className={`py-3 px-4 text-xs font-bold border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+              activeTab === 'quick_switch'
+                ? 'border-indigo-500 text-indigo-300 bg-indigo-500/15'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Zap className="w-4 h-4 text-amber-400 animate-pulse" />
+            Ganti Database Rombel / ID (1-Click)
+          </button>
+          <button
             onClick={() => setActiveTab('status')}
             className={`py-3 px-4 text-xs font-semibold border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
               activeTab === 'status'
@@ -247,7 +278,7 @@ VITE_FIREBASE_MESSAGING_SENDER_ID="${activeFirebaseConfig.messagingSenderId}"`;
             }`}
           >
             <FileCode className="w-4 h-4" />
-            Copy .env Hosting (1-Click)
+            Copy .env Hosting
           </button>
           <button
             onClick={() => setActiveTab('custom')}
@@ -258,7 +289,7 @@ VITE_FIREBASE_MESSAGING_SENDER_ID="${activeFirebaseConfig.messagingSenderId}"`;
             }`}
           >
             <Sliders className="w-4 h-4" />
-            Custom Database Firebase
+            Paste Project Firebase Baru
           </button>
           <button
             onClick={() => setActiveTab('guide')}
@@ -275,6 +306,130 @@ VITE_FIREBASE_MESSAGING_SENDER_ID="${activeFirebaseConfig.messagingSenderId}"`;
 
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1 text-slate-300">
+          {/* TAB 0: QUICK SWITCH DATABASE ID / ROMBEL */}
+          {activeTab === 'quick_switch' && (
+            <div className="space-y-5 animate-fade-in">
+              <div className="p-4 bg-gradient-to-r from-indigo-900/40 via-slate-900 to-slate-900 border border-indigo-500/40 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">Status Database Aktif Saat Ini</span>
+                  </div>
+                  <span className="px-2.5 py-0.5 text-[11px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full">
+                    {hasCustomConfig ? 'Custom Project' : 'Vercel Server Project'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
+                  <div className="p-3 bg-slate-950/70 rounded-xl border border-slate-800">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Project ID Firebase</span>
+                    <span className="text-emerald-300 font-mono font-bold text-sm truncate block mt-0.5">
+                      {activeFirebaseConfig.projectId || 'unknown'}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-slate-950/70 rounded-xl border border-slate-800">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold">Active Firestore Database ID</span>
+                    <span className="text-amber-300 font-mono font-bold text-sm truncate block mt-0.5">
+                      {getActiveDatabaseId()}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* 1-Click Preset Buttons */}
+              <div className="space-y-3">
+                <label className="text-xs font-bold text-slate-200 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Zap className="w-4 h-4 text-amber-400" />
+                    Pilih Preset Database Rombel / Kelas (1-Click Switch)
+                  </span>
+                  <span className="text-[10px] text-slate-400">Langsung aktif tanpa build ulang!</span>
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {[
+                    { id: '(default)', label: '🏢 Database Utama', desc: 'Default Firestore (default)' },
+                    { id: 'kelas-10', label: '🏫 Database Kelas X', desc: 'Isolasi Rombel ID: kelas-10' },
+                    { id: 'kelas-11', label: '🏫 Database Kelas XI', desc: 'Isolasi Rombel ID: kelas-11' },
+                    { id: 'kelas-12', label: '🏫 Database Kelas XII', desc: 'Isolasi Rombel ID: kelas-12' },
+                    { id: 'tahun-2026', label: '📅 Database Tahun 2026', desc: 'Isolasi Tahun ID: tahun-2026' },
+                    { id: 'smpn1-utama', label: '🏫 Database Sekolah A', desc: 'Isolasi ID: smpn1-utama' },
+                  ].map((preset) => {
+                    const isActive = getActiveDatabaseId() === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => handleApplyDatabaseId(preset.id)}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          isActive
+                            ? 'bg-amber-500/20 border-amber-500/60 text-white shadow-lg shadow-amber-900/20'
+                            : 'bg-slate-800/60 border-slate-700/70 text-slate-300 hover:bg-slate-700/60 hover:border-slate-500'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span className="font-bold text-xs">{preset.label}</span>
+                          {isActive && <CheckCircle2 className="w-4 h-4 text-amber-400" />}
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-400 mt-1 block truncate">
+                          {preset.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Custom Database ID Input */}
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl space-y-3">
+                <label className="text-xs font-bold text-slate-200 block">
+                  Atau Ketik Nama/ID Database Firestore Sendiri:
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={targetDatabaseId}
+                    onChange={(e) => setTargetDatabaseId(e.target.value)}
+                    placeholder="Contoh: kelas-10a, rapor-2026, atau (default)"
+                    className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-mono text-amber-300 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleApplyDatabaseId(targetDatabaseId)}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-md"
+                  >
+                    <Check className="w-4 h-4" />
+                    Terapkan & Ganti
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-400">
+                  * Nama database di Google Firebase Console (misal: `(default)`, `kelas-10`, `sekolah-a`).
+                </p>
+              </div>
+
+              {/* Shareable Sync Link & Revert Buttons */}
+              <div className="pt-2 border-t border-slate-800 flex flex-wrap gap-2 justify-between items-center">
+                <button
+                  type="button"
+                  onClick={handleCopySyncLink}
+                  className="px-3.5 py-2 bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/40 text-sky-300 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer"
+                >
+                  <Share2 className="w-4 h-4 text-sky-400" />
+                  Salin Link Sync Database untuk Guru Lain
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetDefaultConfig}
+                  className="px-3.5 py-2 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  Reset ke Server Vercel Live Config
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* TAB 1: STATUS & UJI REALTIME */}
           {activeTab === 'status' && (
             <div className="space-y-6 animate-fade-in">

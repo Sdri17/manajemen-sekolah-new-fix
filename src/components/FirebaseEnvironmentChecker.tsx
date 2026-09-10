@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import defaultConfig from '../../firebase-applet-config.json';
-import { activeFirebaseConfig, getActiveDatabaseId, app, saveCustomFirebaseConfig } from '../lib/firebase';
+import { activeFirebaseConfig, getActiveDatabaseId, app, saveCustomFirebaseConfig, getFirebaseConfig } from '../lib/firebase';
 import { fetchFreshRuntimeConfig, clearRuntimeConfigCache } from '../lib/runtimeConfig';
 import { 
   ShieldCheck, 
@@ -26,37 +26,62 @@ export interface FirebaseEnvironmentCheckerProps {
 
 /**
  * Header Badge Indicator Component for Admin Header / Layout Top Header
- * - Turns GREEN if loaded config matches expected production project
- * - Turns RED if a local/development config or mismatch is detected
+ * - Displays active live Project ID & active Database ID
+ * - Reactive to firebase-config-changed, firebase-reinitialized, and storage events
+ * - Clickable to trigger the Database & Hosting Connection Modal
  */
-export function FirebaseHeaderStatusBadge() {
-  const currentProjectId = activeFirebaseConfig?.projectId || app?.options?.projectId || 'unknown';
-  const hasApiKey = !!(activeFirebaseConfig?.apiKey || app?.options?.apiKey);
+export function FirebaseHeaderStatusBadge({ onOpenModal }: { onOpenModal?: () => void }) {
+  const [config, setConfig] = useState(() => getFirebaseConfig());
+  const [activeDbId, setActiveDbId] = useState<string>(() => getActiveDatabaseId());
 
-  // A valid non-empty active project ID with API key is healthy and active
-  const isHealthy = currentProjectId && currentProjectId !== 'unknown' && currentProjectId !== 'demo' && (hasApiKey || currentProjectId.length > 3);
+  useEffect(() => {
+    const refresh = () => {
+      setConfig(getFirebaseConfig());
+      setActiveDbId(getActiveDatabaseId());
+    };
+
+    window.addEventListener('firebase-config-changed', refresh);
+    window.addEventListener('firebase-reinitialized', refresh);
+    window.addEventListener('storage', refresh);
+    window.addEventListener('data-changed', refresh);
+
+    return () => {
+      window.removeEventListener('firebase-config-changed', refresh);
+      window.removeEventListener('firebase-reinitialized', refresh);
+      window.removeEventListener('storage', refresh);
+      window.removeEventListener('data-changed', refresh);
+    };
+  }, []);
+
+  const projectId = config.projectId || app?.options?.projectId || 'unknown';
+  const dbIdDisplay = activeDbId || config.firestoreDatabaseId || '(default)';
+  const isCustom = typeof window !== 'undefined' && !!localStorage.getItem('custom_firebase_config');
 
   return (
-    <div 
-      className={`flex items-center gap-2 px-3 py-1 rounded-full border text-xs font-mono font-semibold transition-all shadow-sm ${
-        isHealthy
-          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-          : 'bg-rose-500/15 text-rose-300 border-rose-500/40 hover:bg-rose-500/25'
+    <button 
+      type="button"
+      onClick={onOpenModal}
+      className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono transition-all shadow-md cursor-pointer group hover:scale-[1.02] ${
+        isCustom 
+          ? 'bg-amber-500/15 text-amber-200 border-amber-500/40 hover:bg-amber-500/25 hover:border-amber-400'
+          : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25 hover:border-emerald-400'
       }`}
-      title={
-        isHealthy 
-          ? `FIREBASE ONLINE: App terhubung ke database produksi '${currentProjectId}'` 
-          : `PERINGATAN: Konfigurasi Firebase '${currentProjectId}' belum terkonfigurasi`
-      }
+      title={`Klik untuk Kelola / Ganti Database! Project: ${projectId} | DB ID: ${dbIdDisplay}`}
     >
-      <span className={`w-2 h-2 rounded-full ${isHealthy ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-      <span className="text-[10px] uppercase font-sans font-bold tracking-wider">
-        {isHealthy ? 'PROD MATCH' : 'MISMATCH'}
-      </span>
-      <span className="text-[11px] opacity-90 truncate max-w-[120px] sm:max-w-[180px]">
-        {currentProjectId}
-      </span>
-    </div>
+      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isCustom ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400 animate-pulse'}`} />
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="text-[10px] uppercase font-sans font-extrabold tracking-wider bg-slate-900/60 px-1.5 py-0.5 rounded text-indigo-300 border border-slate-700/60 shrink-0">
+          {isCustom ? 'CUSTOM DB' : 'VERCEL LIVE'}
+        </span>
+        <span className="text-[11px] font-bold tracking-tight truncate max-w-[90px] sm:max-w-[130px]">
+          {projectId}
+        </span>
+        <span className="text-[10px] text-sky-300 bg-sky-950/60 px-1.5 py-0.5 rounded border border-sky-500/30 truncate max-w-[80px] shrink-0">
+          {dbIdDisplay}
+        </span>
+      </div>
+      <Database size={13} className="opacity-80 group-hover:opacity-100 group-hover:scale-110 transition-all text-amber-300 shrink-0 ml-0.5" />
+    </button>
   );
 }
 
