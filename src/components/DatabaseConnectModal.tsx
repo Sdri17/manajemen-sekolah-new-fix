@@ -139,6 +139,9 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
     }
 
     toast.success('Konfigurasi database kustom berhasil disimpan & diperbarui. Memuat ulang...');
+    setTimeout(() => {
+      window.location.reload();
+    }, 600);
   };
 
   const handleResetDefaultConfig = () => {
@@ -151,8 +154,11 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
         document.cookie = "edusync_custom_firebase_config=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
         document.cookie = "edusync_active_firestore_database_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
       }
-      toast.success('Database dikembalikan ke Vercel Server Live Config (firebase-applet-config.json)!');
+      toast.success('Database dikembalikan ke Vercel Server Live Config (firebase-applet-config.json)! Memuat ulang...');
       saveCustomFirebaseConfig(null);
+      setTimeout(() => {
+        window.location.reload();
+      }, 600);
     }
   };
 

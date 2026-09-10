@@ -12,6 +12,8 @@ export const FirebaseSettingsDiagnostic: React.FC = () => {
   const [configSource, setConfigSource] = useState<string>('Memuat...');
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string>('');
 
+  const [isCustomConfig, setIsCustomConfig] = useState<boolean>(false);
+
   const loadCurrentMetadata = () => {
     const current = getFirebaseConfig();
     const dbId = getActiveDatabaseId();
@@ -21,19 +23,37 @@ export const FirebaseSettingsDiagnostic: React.FC = () => {
 
     const isCustom = typeof window !== 'undefined' && !!localStorage.getItem('custom_firebase_config');
     const isLocked = typeof window !== 'undefined' && localStorage.getItem('edusync_debug_lock_active') === 'true';
+    setIsCustomConfig(isCustom || isLocked);
 
     if (isLocked) {
-      setConfigSource('Terkunci Debug Panel (Custom Profile)');
+      setConfigSource('Database Kustom Terkunci (Debug Profile)');
     } else if (isCustom) {
-      setConfigSource('Kustom LocalStorage / Cookie');
+      setConfigSource('Database Kustom Pilihan Pengguna (Active)');
     } else {
-      setConfigSource('Live Vercel Server Deployment (firebase-applet-config.json)');
+      setConfigSource('Live Server Deployment (/firebase-applet-config.json)');
     }
   };
 
   useEffect(() => {
     loadCurrentMetadata();
   }, []);
+
+  const handleResetToServerDefault = async () => {
+    if (!confirm('Apakah Anda yakin ingin menghapus konfigurasi database kustom dan kembali ke database bawaan server Vercel?')) return;
+    setIsRefreshing(true);
+    const toastId = toast.loading('Mengembalikan ke konfigurasi bawaan server...');
+    try {
+      saveCustomFirebaseConfig(null);
+      await fetchRemoteFirebaseConfig({ forceRefresh: true });
+      toast.success('Berhasil dikembalikan ke database server bawaan! Memuat ulang...', { id: toastId });
+      setTimeout(() => {
+        window.location.reload();
+      }, 500);
+    } catch (err: any) {
+      toast.error(`Gagal mereset: ${err?.message || 'Error'}`, { id: toastId });
+      setIsRefreshing(false);
+    }
+  };
 
   const handleRefreshMetadata = async () => {
     setIsRefreshing(true);
@@ -105,15 +125,28 @@ export const FirebaseSettingsDiagnostic: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleRefreshMetadata}
-          disabled={isRefreshing}
-          className="flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-semibold rounded-xl border border-indigo-400/40 transition-all shadow-lg shadow-indigo-600/30 disabled:opacity-50 cursor-pointer shrink-0"
-        >
-          <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
-          <span>{isRefreshing ? 'Memperbarui...' : 'Refresh Metadata'}</span>
-        </button>
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
+          {isCustomConfig && (
+            <button
+              type="button"
+              onClick={handleResetToServerDefault}
+              disabled={isRefreshing}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 text-xs font-semibold rounded-xl border border-amber-500/40 transition-all cursor-pointer"
+            >
+              <span>Reset ke Config Server Bawaan</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleRefreshMetadata}
+            disabled={isRefreshing}
+            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-semibold rounded-xl border border-indigo-400/40 transition-all shadow-lg shadow-indigo-600/30 disabled:opacity-50 cursor-pointer shrink-0"
+          >
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+            <span>{isRefreshing ? 'Memperbarui...' : 'Refresh Metadata'}</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
