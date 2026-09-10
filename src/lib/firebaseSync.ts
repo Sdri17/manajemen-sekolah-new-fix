@@ -1983,12 +1983,16 @@ export async function fetchLatestUsersFromFirebase(forceRefresh: boolean = false
  */
 export async function pullAllRemoteDataFromFirebase(
   forceFullPull: boolean = false,
-  isSilent: boolean = false
+  isSilent: boolean = false,
+  cacheInvalidationToken?: string
 ): Promise<{ success: boolean; count: number; message: string }> {
   const pullStartTime = performance.now();
   const currentPullTimestamp = new Date().toISOString();
+  const cacheToken = cacheInvalidationToken || `cb_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   try {
-    // Wait for config fetch with cache-busting timestamp to complete before pulling
+    // Force config fetch with explicit cache-invalidation token before pulling data
+    await fetchRemoteFirebaseConfig({ forceRefresh: true }).catch(() => {});
     await loadFirebaseConfigAsync().catch(() => {});
 
     firebaseStatus = 'syncing';

@@ -18,6 +18,41 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
     const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
     swRegistration = reg;
     console.log('[NotificationService] Service Worker registered with scope:', reg.scope);
+
+    // Force update check on every app start to verify if SW or config variables changed on server
+    await reg.update().catch((e) => console.warn('[NotificationService] SW update check error:', e));
+
+    // If a service worker is waiting, force skipWaiting immediately
+    if (reg.waiting) {
+      console.log('[NotificationService] Service Worker waiting found, triggering skipWaiting');
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+      reg.waiting.postMessage('SKIP_WAITING');
+    }
+
+    // Listen for new updates found
+    reg.addEventListener('updatefound', () => {
+      const installingWorker = reg.installing;
+      if (installingWorker) {
+        installingWorker.addEventListener('statechange', () => {
+          if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            console.log('[NotificationService] New Service Worker installed, triggering skipWaiting');
+            installingWorker.postMessage({ type: 'SKIP_WAITING' });
+            installingWorker.postMessage('SKIP_WAITING');
+          }
+        });
+      }
+    });
+
+    // When controller changes (new SW activates and claims clients), reload to bypass cached responses
+    let isReloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!isReloading) {
+        isReloading = true;
+        console.log('[NotificationService] Service Worker controller changed - reloading app with latest deployment config...');
+        window.location.reload();
+      }
+    });
+
     return reg;
   } catch (err) {
     console.warn('[NotificationService] Service Worker registration failed:', err);

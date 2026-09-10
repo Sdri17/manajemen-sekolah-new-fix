@@ -9,6 +9,7 @@ import { getFirebaseStatus, pushAllLocalDataToFirebase, purgeAllFirebaseData, ve
 import UserManagement from '../components/UserManagement';
 import AdminManagementPanel from '../components/AdminManagementPanel';
 import { DatabaseMigrationModal } from '../components/DatabaseMigrationModal';
+import FirebaseSettingsDiagnostic from '../components/FirebaseSettingsDiagnostic';
 import { parseAndNormalizeBackup } from '../lib/backupHelper';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
@@ -1186,6 +1187,9 @@ export default function Pengaturan({
         {/* TAB 1: PENGATURAN UMUM */}
         {activeTab === 'umum' && (
           <form onSubmit={handleSave} className="space-y-8 animate-fade-in">
+            {/* DIAGNOSTIK METADATA FIREBASE DEPLOYMENT */}
+            <FirebaseSettingsDiagnostic />
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="bg-slate-800/40 p-6 rounded-2xl border border-slate-700/50 backdrop-blur-sm space-y-5">
                 <h3 className="text-lg font-medium text-slate-200 border-b border-slate-700/50 pb-3 flex flex-wrap justify-between items-center gap-2">

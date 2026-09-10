@@ -321,7 +321,33 @@ function MainAppContent() {
       // Defer heavy background tasks (integrity check & realtime sync & rules verification & remote database config check)
       setTimeout(async () => {
         try {
-          await fetchRemoteFirebaseConfig();
+          // Purge stale local browser storage keys that might be caching old config references
+          if (typeof window !== 'undefined') {
+            const isDevDebugLocked = 
+              localStorage.getItem('edusync_debug_lock_active') === 'true' ||
+              (localStorage.getItem('edusync_dev_active_profile_id') && 
+               localStorage.getItem('edusync_dev_active_profile_id') !== 'profile-system-default');
+
+            if (!isDevDebugLocked) {
+              const keysToPurge = [
+                'custom_firebase_config',
+                'active_firestore_database_id',
+                'edusync_cached_firebase_project_id',
+                'edusync_cached_firebase_config'
+              ];
+              keysToPurge.forEach(k => {
+                if (localStorage.getItem(k)) {
+                  console.log(`[initializeData] Purging stale local storage key before re-fetch: ${k}`);
+                  localStorage.removeItem(k);
+                }
+              });
+              document.cookie = "edusync_custom_firebase_config=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+              document.cookie = "edusync_active_firestore_database_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+            }
+          }
+
+          // Re-fetch updated database configuration with explicit forceRefresh cache invalidation
+          await fetchRemoteFirebaseConfig({ forceRefresh: true });
           await syncDatabaseConfigFromCloud();
         } catch (_e) {}
         startBackgroundIntegrityObserver();

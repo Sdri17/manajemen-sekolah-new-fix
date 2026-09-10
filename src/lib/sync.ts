@@ -466,18 +466,38 @@ export async function pushDataToSheets(_appsScriptUrl?: string, forceFull = fals
   }
 }
 
-export async function pullDataFromSheets(_appsScriptUrl?: string) {
+export async function pullDataFromSheets(appsScriptUrl?: string) {
+  const cacheBustToken = `cb_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
   updateSyncProgress({
     isSyncing: true,
     stage: 'Fetching Data',
-    stageLabel: 'Menyinkronkan data dengan Cloud Firebase...',
+    stageLabel: `Menyinkronkan data dengan Cloud Firebase (CacheBust: ${cacheBustToken})...`,
     percent: 30,
     direction: 'pull'
   });
 
   try {
+    // If appsScriptUrl is provided, fetch with explicit cache-invalidation query token and headers
+    if (appsScriptUrl && String(appsScriptUrl).trim() !== '') {
+      const cleanUrl = String(appsScriptUrl).trim();
+      const delimiter = cleanUrl.includes('?') ? '&' : '?';
+      const targetUrl = `${cleanUrl}${delimiter}cacheBust=${cacheBustToken}`;
+
+      try {
+        await fetch(targetUrl, {
+          method: 'GET',
+          headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'X-Cache-Bust': cacheBustToken
+          }
+        }).catch(() => {});
+      } catch (_e) {}
+    }
+
     const [pullRes, pushRes] = await Promise.all([
-      pullAllRemoteDataFromFirebase(),
+      pullAllRemoteDataFromFirebase(false, false, cacheBustToken),
       pushAllLocalDataToFirebase()
     ]);
 

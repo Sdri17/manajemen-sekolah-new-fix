@@ -81,7 +81,12 @@ export function isConfigDifferent(cfg1: Partial<FirebaseConfigType> | null, cfg2
  * Fetches the firebase-applet-config.json file directly from the public root using a standard fetch request
  * with a cache-busting timestamp to immediately respect updates on Vercel deployments across all devices.
  */
-export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
+export async function fetchRemoteFirebaseConfig(options?: { forceRefresh?: boolean }): Promise<FirebaseConfigType> {
+  if (options?.forceRefresh) {
+    remoteConfigCache = null;
+    fetchPromise = null;
+  }
+
   if (typeof window === 'undefined') {
     return (defaultConfig as FirebaseConfigType);
   }

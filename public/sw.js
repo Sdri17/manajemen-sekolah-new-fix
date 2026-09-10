@@ -1,14 +1,22 @@
-// Service Worker for EduSync - Offline Resilience & Push Notifications
-const CACHE_NAME = 'edusync-cache-v1';
+// Service Worker for EduSync - Offline Resilience, Push Notifications & Fast Deployment Updates
+const CACHE_NAME = 'edusync-cache-v2';
 
 self.addEventListener('install', (event) => {
-  console.log('[Service Worker] Installed');
+  console.log('[Service Worker] Installed - forcing skipWaiting');
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  console.log('[Service Worker] Activated');
+  console.log('[Service Worker] Activated - claiming clients');
   event.waitUntil(self.clients.claim());
+});
+
+// Handle skipWaiting message from app registration logic
+self.addEventListener('message', (event) => {
+  if (event.data && (event.data.type === 'SKIP_WAITING' || event.data === 'SKIP_WAITING')) {
+    console.log('[Service Worker] Received SKIP_WAITING signal');
+    self.skipWaiting();
+  }
 });
 
 // Listen for Push Events
