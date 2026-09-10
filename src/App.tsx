@@ -14,7 +14,7 @@ import { pushDataToSheets, pullDataFromSheets, getSyncStats, validateStudentData
 import { startBackgroundIntegrityObserver } from './lib/integrityObserver';
 import { initFirebaseRealtimeSync, pushAllLocalDataToFirebase, pullAllRemoteDataFromFirebase, fetchLatestUsersFromFirebase, verifySiswaCollectionSecurityRules } from './lib/firebaseSync';
 import { fetchRemoteFirebaseConfig } from './lib/remoteConfigLoader';
-import { syncDatabaseConfigFromCloud } from './lib/firebase';
+import { syncDatabaseConfigFromCloud, verifyFirestoreConfigPing } from './lib/firebase';
 import { sanitizeInput, sanitizeUsername, containsSqlInjection, getLockoutStatus, recordFailedAttempt, resetFailedAttempts } from './lib/security';
 import { logAuditEvent } from './lib/auditLogger';
 import { RefreshCw, Eye, EyeOff, ShieldAlert, Lock, AlertTriangle } from 'lucide-react';
@@ -318,9 +318,14 @@ function MainAppContent() {
         }
       }
 
-      // Defer heavy background tasks (integrity check & realtime sync & rules verification & remote database config check)
+      // Defer heavy background tasks (verification ping, integrity check & realtime sync & rules verification & remote database config check)
       setTimeout(async () => {
         try {
+          // Perform verification ping to Firestore configuration endpoint
+          const pingResult = await verifyFirestoreConfigPing();
+          if (pingResult.reinitialized) {
+            console.log(`[AppInit] Firebase services auto-reinitialized with verified project ID: ${pingResult.activeProjectId}`);
+          }
           // Re-fetch updated database configuration
           await fetchRemoteFirebaseConfig();
           await syncDatabaseConfigFromCloud();

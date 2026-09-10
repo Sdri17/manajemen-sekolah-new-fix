@@ -360,6 +360,110 @@ export function saveCustomFirebaseConfig(config: Partial<FirebaseConfigType> | n
   }
 }
 
+/**
+ * Re-initializes all Firebase services dynamically (Auth, Firestore DB instance)
+ * and dispatches re-initialization events across the application.
+ */
+export function reinitializeFirebaseServices(newConfig?: Partial<FirebaseConfigType>): Firestore {
+  clearRuntimeConfigCache();
+  
+  if (newConfig && newConfig.projectId) {
+    Object.assign(activeFirebaseConfig, newConfig);
+    if (newConfig.apiKey) {
+      saveCustomFirebaseConfig(newConfig);
+    }
+  }
+
+  const activeDbId = getActiveDatabaseId();
+  db = createFirestoreInstance(activeDbId);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('firebase-reinitialized', {
+      detail: {
+        config: activeFirebaseConfig,
+        databaseId: activeDbId,
+        reinitializedAt: new Date().toISOString()
+      }
+    }));
+    window.dispatchEvent(new CustomEvent('firebase-config-changed', { detail: activeFirebaseConfig }));
+    window.dispatchEvent(new Event('data-changed'));
+  }
+
+  syncDatabaseConfigFromCloud().catch(() => {});
+  return db;
+}
+
+/**
+ * Verification hook executed during initial app load that performs a lightweight 'ping'
+ * to the current Firestore configuration endpoint (/firebase-applet-config.json).
+ * If the response project ID differs from the one stored in local storage, it triggers
+ * an automatic re-initialization of all Firebase services.
+ */
+export async function verifyFirestoreConfigPing(): Promise<{ reinitialized: boolean; activeProjectId: string }> {
+  if (typeof window === 'undefined') {
+    return { reinitialized: false, activeProjectId: activeFirebaseConfig.projectId };
+  }
+
+  try {
+    // 1. Perform lightweight ping to Firestore configuration endpoint
+    const pingResponse = await fetch(`/firebase-applet-config.json?t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+
+    if (pingResponse.ok) {
+      const endpointConfig = await pingResponse.json();
+      if (endpointConfig && endpointConfig.projectId) {
+        // 2. Read stored project ID from local storage
+        let storedProjectId: string | null = null;
+        
+        // Check custom_firebase_config in localStorage
+        const customLocalStr = localStorage.getItem('custom_firebase_config');
+        if (customLocalStr) {
+          try {
+            const parsedCustom = JSON.parse(customLocalStr);
+            if (parsedCustom && parsedCustom.projectId) {
+              storedProjectId = parsedCustom.projectId;
+            }
+          } catch (_e) {}
+        }
+
+        // Fallback to cached project ID key in localStorage if no custom config
+        if (!storedProjectId) {
+          storedProjectId = localStorage.getItem('edusync_cached_firebase_project_id');
+        }
+
+        console.log(`[FirebaseConfigPing] Endpoint Project ID: "${endpointConfig.projectId}", Stored LocalStorage Project ID: "${storedProjectId || 'none'}"`);
+
+        // 3. Compare endpoint project ID with stored project ID
+        if (storedProjectId && storedProjectId !== endpointConfig.projectId) {
+          console.warn(`[FirebaseConfigPing] Project ID mismatch detected! Endpoint: ${endpointConfig.projectId} vs Stored: ${storedProjectId}. Triggering automatic re-initialization of all Firebase services...`);
+
+          // Update local storage to reflect newly verified endpoint configuration
+          localStorage.setItem('edusync_cached_firebase_project_id', endpointConfig.projectId);
+          if (customLocalStr) {
+            localStorage.setItem('custom_firebase_config', JSON.stringify(endpointConfig));
+          }
+
+          // 4. Trigger automatic re-initialization of all Firebase services
+          reinitializeFirebaseServices(endpointConfig);
+          return { reinitialized: true, activeProjectId: endpointConfig.projectId };
+        } else {
+          // Store current verified project ID in cache for future pings
+          localStorage.setItem('edusync_cached_firebase_project_id', endpointConfig.projectId);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[FirebaseConfigPing] Verification ping failed or offline:', err);
+  }
+
+  return { reinitialized: false, activeProjectId: activeFirebaseConfig.projectId };
+}
+
 export default app;
 
 
