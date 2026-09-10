@@ -86,7 +86,43 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
     return (defaultConfig as FirebaseConfigType);
   }
 
-  // Priority 1 (Highest): Always fetch live public /firebase-applet-config.json directly from server
+  // Priority 0: Check URL query parameters (?db_id=... or ?db_config=...)
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlDbConfig = urlParams.get('db_config');
+    if (urlDbConfig) {
+      try {
+        const decoded = JSON.parse(decodeURIComponent(atob(urlDbConfig)));
+        if (decoded && decoded.projectId && decoded.apiKey) {
+          localStorage.setItem('custom_firebase_config', JSON.stringify(decoded));
+          if (decoded.firestoreDatabaseId) {
+            localStorage.setItem('active_firestore_database_id', decoded.firestoreDatabaseId);
+          }
+          remoteConfigCache = decoded as FirebaseConfigType;
+          return remoteConfigCache;
+        }
+      } catch (_e) {}
+    }
+  } catch (_e) {}
+
+  // Priority 1: Check explicit custom database override in localStorage / Cookie saved by user in app
+  const cookieCustom = getCookieCustomConfig();
+  const localCustomStr = localStorage.getItem('custom_firebase_config');
+  let customObj: any = cookieCustom;
+  if (!customObj && localCustomStr) {
+    try { customObj = JSON.parse(localCustomStr); } catch (_e) {}
+  }
+
+  if (customObj && customObj.projectId && customObj.apiKey) {
+    const oldConfig = remoteConfigCache;
+    remoteConfigCache = customObj as FirebaseConfigType;
+    if (oldConfig && isConfigDifferent(oldConfig, remoteConfigCache)) {
+      notifyListeners(remoteConfigCache, oldConfig);
+    }
+    return remoteConfigCache;
+  }
+
+  // Priority 2: Fetch live public /firebase-applet-config.json directly from server
   try {
     const response = await fetch(`/firebase-applet-config.json?t=${Date.now()}`, {
       cache: 'no-store',
@@ -112,20 +148,6 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
         };
 
         const oldConfig = remoteConfigCache;
-
-        // Clean up any stale localStorage override if server project/database ID has changed
-        const localCustomStr = localStorage.getItem('custom_firebase_config');
-        if (localCustomStr) {
-          try {
-            const parsed = JSON.parse(localCustomStr);
-            if (parsed && (parsed.projectId !== config.projectId || parsed.firestoreDatabaseId !== config.firestoreDatabaseId)) {
-              console.log('[remoteConfigLoader] Purging stale localStorage custom_firebase_config to sync with live server configuration');
-              localStorage.removeItem('custom_firebase_config');
-              localStorage.removeItem('active_firestore_database_id');
-            }
-          } catch (_e) {}
-        }
-
         remoteConfigCache = config;
 
         if (oldConfig && isConfigDifferent(oldConfig, config)) {
@@ -138,19 +160,6 @@ export async function fetchRemoteFirebaseConfig(): Promise<FirebaseConfigType> {
     }
   } catch (error: any) {
     console.warn('[remoteConfigLoader] Error fetching live /firebase-applet-config.json, falling back:', error);
-  }
-
-  // Priority 2: LocalStorage or Cookie Override for user-configured custom database
-  const cookieCustom = getCookieCustomConfig();
-  const localCustomStr = localStorage.getItem('custom_firebase_config');
-  let customObj: any = cookieCustom;
-  if (!customObj && localCustomStr) {
-    try { customObj = JSON.parse(localCustomStr); } catch (_e) {}
-  }
-
-  if (customObj && customObj.projectId && customObj.apiKey) {
-    remoteConfigCache = customObj as FirebaseConfigType;
-    return remoteConfigCache;
   }
 
   // Priority 3: Vite Environment variables (e.g. set in Vercel settings)

@@ -59,6 +59,7 @@ import DatabaseConnectModal from './DatabaseConnectModal';
 import ConflictResolutionModal from './ConflictResolutionModal';
 import { ManualSyncQueueModal } from './ManualSyncQueueModal';
 import ContextInspectorModal from './ContextInspectorModal';
+import DeveloperDebugFloatingButton from './DeveloperDebugFloatingButton';
 import { usePendingSync } from '../hooks/usePendingSync';
 import { getFirebaseStatus } from '../lib/firebaseSync';
 import { 
@@ -991,6 +992,9 @@ export default function Layout({
         onClose={() => setIsContextInspectorOpen(false)}
         user={user}
       />
+
+      {/* Developer-only Firebase Debug Panel Trigger */}
+      <DeveloperDebugFloatingButton />
     </div>
   );
 }

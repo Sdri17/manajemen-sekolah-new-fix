@@ -4,6 +4,8 @@ import {
   getFirestore, 
   Firestore, 
   doc, 
+  getDoc,
+  setDoc,
   getDocFromServer,
   memoryLocalCache
 } from 'firebase/firestore';
@@ -98,10 +100,22 @@ export const auth = getAuth(app);
 
 /**
  * Mendapatkan Database ID Firestore yang sedang aktif
- * (Memeriksa Cookie dan localStorage agar tersinkronisasi di perangkat/sesi lain)
+ * (Memeriksa Query URL, Cookie, dan localStorage agar tersinkronisasi di perangkat/sesi lain)
  */
 export function getActiveDatabaseId(): string {
   if (typeof window !== 'undefined') {
+    // 0. Check URL query parameters (?db_id=...)
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlDbId = urlParams.get('db_id');
+      if (urlDbId && urlDbId.trim()) {
+        const cleanUrlDb = urlDbId.trim();
+        localStorage.setItem('active_firestore_database_id', cleanUrlDb);
+        setCookie('edusync_active_firestore_database_id', cleanUrlDb, 30);
+        return cleanUrlDb;
+      }
+    } catch (_e) {}
+
     // 1. Check Cookie first
     const cookieDb = getCookie('edusync_active_firestore_database_id');
     if (cookieDb && cookieDb.trim()) {
@@ -115,7 +129,6 @@ export function getActiveDatabaseId(): string {
     const customDb = localStorage.getItem('active_firestore_database_id');
     if (customDb && customDb.trim()) {
       const trimmed = customDb.trim();
-      // If the active config belongs to user's custom project or doesn't match old remix ID, clear stale ID
       if (trimmed.includes('ai-studio-remix') || trimmed.includes('acc88558')) {
         try { 
           localStorage.removeItem('active_firestore_database_id'); 
@@ -216,6 +229,82 @@ if (typeof window !== 'undefined') {
 }
 
 /**
+ * Synchronizes the current active database configuration to Cloud Firestore ('school_settings/global_database_config')
+ * so that any other device opening the app will automatically read and switch to the same database.
+ */
+export async function syncDatabaseConfigToCloud(customConfig?: Partial<FirebaseConfigType> | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    const configToSync = customConfig || getFirebaseConfig();
+    const activeDbId = getActiveDatabaseId();
+
+    const payload = {
+      projectId: configToSync.projectId,
+      apiKey: configToSync.apiKey,
+      authDomain: configToSync.authDomain || `${configToSync.projectId}.firebaseapp.com`,
+      firestoreDatabaseId: configToSync.firestoreDatabaseId || activeDbId || '(default)',
+      appId: configToSync.appId || '',
+      updatedAt: new Date().toISOString(),
+      updatedByDevice: typeof navigator !== 'undefined' ? navigator.userAgent.substring(0, 40) : 'Web App'
+    };
+
+    // Save to active db
+    const targetDocRef = doc(db, 'school_settings', 'global_database_config');
+    await setDoc(targetDocRef, payload, { merge: true });
+
+    // Also attempt saving to primary (default) db instance if target is different
+    if (activeDbId !== '(default)' && activeDbId !== 'default') {
+      try {
+        const primaryDb = createFirestoreInstance('(default)');
+        const primaryDocRef = doc(primaryDb, 'school_settings', 'global_database_config');
+        await setDoc(primaryDocRef, payload, { merge: true });
+      } catch (_e) {}
+    }
+
+    console.log('[firebase.ts] Synced database config to Cloud Firestore across all devices:', payload.firestoreDatabaseId);
+  } catch (err) {
+    console.warn('[firebase.ts] Cloud database config sync warning:', err);
+  }
+}
+
+/**
+ * Checks Cloud Firestore ('school_settings/global_database_config') for any database configuration
+ * updated from another device, and automatically adopts it if newer/different.
+ */
+export async function syncDatabaseConfigFromCloud(): Promise<boolean> {
+  if (typeof window === 'undefined') return false;
+  try {
+    const primaryDb = getActiveDatabaseId() === '(default)' ? db : createFirestoreInstance('(default)');
+    const configDocRef = doc(primaryDb, 'school_settings', 'global_database_config');
+    const snap = await getDoc(configDocRef);
+
+    if (snap.exists()) {
+      const remote = snap.data() as FirebaseConfigType & { updatedAt?: string };
+      if (remote && remote.projectId && remote.apiKey) {
+        const currentActive = getFirebaseConfig();
+        const currentDbId = getActiveDatabaseId();
+
+        const isDifferentProj = remote.projectId !== currentActive.projectId;
+        const isDifferentDb = remote.firestoreDatabaseId !== (currentActive.firestoreDatabaseId || currentDbId);
+
+        if (isDifferentProj || isDifferentDb) {
+          console.log(`[CloudConfigSync] Remote database config detected from another device! Project: ${remote.projectId}, Database ID: ${remote.firestoreDatabaseId}`);
+          
+          saveCustomFirebaseConfig(remote);
+          if (remote.firestoreDatabaseId && remote.firestoreDatabaseId !== currentDbId) {
+            switchFirestoreDatabase(remote.firestoreDatabaseId);
+          }
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[CloudConfigSync] Could not check Cloud database config:', err);
+  }
+  return false;
+}
+
+/**
  * Berpindah Database Firestore (misal: beralih ke Database ID Rombel / Kelas lain)
  */
 export function switchFirestoreDatabase(newDbId: string) {
@@ -226,6 +315,7 @@ export function switchFirestoreDatabase(newDbId: string) {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('database-switched', { detail: { databaseId: cleanDbId } }));
   }
+  syncDatabaseConfigToCloud(null).catch(() => {});
   return db;
 }
 
@@ -251,6 +341,9 @@ export function saveCustomFirebaseConfig(config: Partial<FirebaseConfigType> | n
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('firebase-config-changed', { detail: config }));
     window.dispatchEvent(new Event('data-changed'));
+  }
+  if (config) {
+    syncDatabaseConfigToCloud(config).catch(() => {});
   }
 }
 

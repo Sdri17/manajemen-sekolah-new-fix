@@ -20,7 +20,7 @@ import {
   enableIndexedDbPersistence,
   enableMultiTabIndexedDbPersistence
 } from 'firebase/firestore';
-import { db, auth, activeFirebaseConfig, getActiveDatabaseId, switchFirestoreDatabase } from './firebase';
+import { db, auth, activeFirebaseConfig, getActiveDatabaseId, switchFirestoreDatabase, syncDatabaseConfigFromCloud, saveCustomFirebaseConfig } from './firebase';
 import { getRuntimeFirebaseConfig, getRuntimeProjectId } from './runtimeConfig';
 import { 
   getRemoteFirebaseConfig, 
@@ -2414,9 +2414,34 @@ export async function initFirebaseRealtimeSync() {
   // Ensure Firebase initialization logic waits for config fetch with cache-busting timestamp to complete before connecting
   try {
     await loadFirebaseConfigAsync();
+    await syncDatabaseConfigFromCloud();
   } catch (err) {
     console.warn('[firebaseSync] Pre-initialization config load warning:', err);
   }
+
+  // Set up real-time listener for global database config changes saved from other devices
+  try {
+    const configDocRef = doc(db, 'school_settings', 'global_database_config');
+    const unsubConfig = onSnapshot(configDocRef, (snap) => {
+      if (snap.exists()) {
+        const remoteData = snap.data() as any;
+        if (remoteData && remoteData.projectId && remoteData.apiKey) {
+          const active = getRemoteFirebaseConfig();
+          const activeDbId = getActiveDatabaseId();
+          if (remoteData.projectId !== active.projectId || remoteData.firestoreDatabaseId !== (active.firestoreDatabaseId || activeDbId)) {
+            console.log('[RealtimeCloudSync] Realtime database config update received from another device:', remoteData.firestoreDatabaseId);
+            saveCustomFirebaseConfig(remoteData);
+            if (remoteData.firestoreDatabaseId && remoteData.firestoreDatabaseId !== activeDbId) {
+              switchFirestoreDatabase(remoteData.firestoreDatabaseId);
+            }
+          }
+        }
+      }
+    }, (err) => {
+      console.warn('[RealtimeCloudSync] Config snapshot error:', err?.message);
+    });
+    unsubscribers.push(unsubConfig);
+  } catch (_e) {}
 
   isFirebaseSyncActive = true;
   firebaseStatus = 'syncing';

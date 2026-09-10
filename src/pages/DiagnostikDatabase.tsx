@@ -4,13 +4,14 @@ import { repairDatabaseFromCloud } from '../lib/integrityObserver';
 import { 
   ShieldCheck, AlertTriangle, CheckCircle2, RefreshCw, Trash2, Wrench, 
   Search, FileText, Database, UserX, AlertCircle, ArrowRight, Download, Filter, Wand2,
-  Clock, Zap, Activity, Cloud, Lock, Server
+  Clock, Zap, Activity, Cloud, Lock, Server, Terminal
 } from 'lucide-react';
 import { getLatencySummary, pullAllRemoteDataFromFirebase, verifyAndForceSyncGrades, inspectAndLogFirestoreCollections, downloadAuditSyncReport } from '../lib/firebaseSync';
 import { runFirestoreSchemaCleanupAndAudit, SchemaCleanupResult } from '../lib/schemaValidator';
 import FirebaseDiagnosticAndLogs from '../components/FirebaseDiagnosticAndLogs';
 import toast from 'react-hot-toast';
 import DatabaseConnectModal from '../components/DatabaseConnectModal';
+import DeveloperDebugPanel from '../components/DeveloperDebugPanel';
 
 export interface OrphanIssue {
   id: string;
@@ -93,6 +94,7 @@ export default function DiagnostikDatabase() {
   const [latencyMetrics, setLatencyMetrics] = useState(() => getLatencySummary());
   const [isTestingLatency, setIsTestingLatency] = useState(false);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
+  const [isDeveloperDebugPanelOpen, setIsDeveloperDebugPanelOpen] = useState(false);
 
   useEffect(() => {
     const handleLatencyUpdate = () => {
@@ -615,6 +617,15 @@ export default function DiagnostikDatabase() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setIsDeveloperDebugPanelOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-bold shadow-lg transition-all cursor-pointer"
+            title="Buka panel debug pengembang untuk beralih profil firebase-applet-config.json"
+          >
+            <Terminal size={15} className="text-indigo-400 animate-pulse" />
+            <span>Developer Debug Panel</span>
+          </button>
+
           <button
             onClick={() => setIsConnectModalOpen(true)}
             className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/30 transition-all cursor-pointer border border-indigo-400/30"
@@ -1291,6 +1302,14 @@ export default function DiagnostikDatabase() {
         isOpen={isConnectModalOpen}
         onClose={() => setIsConnectModalOpen(false)}
       />
+
+      {/* Developer Debug Panel Modal */}
+      {isDeveloperDebugPanelOpen && (
+        <DeveloperDebugPanel
+          isOpen={isDeveloperDebugPanelOpen}
+          onClose={() => setIsDeveloperDebugPanelOpen(false)}
+        />
+      )}
     </div>
   );
 }

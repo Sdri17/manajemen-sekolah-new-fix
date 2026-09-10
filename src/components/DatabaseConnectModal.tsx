@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { 
   Database, Cloud, CheckCircle2, AlertTriangle, Copy, Check, Download, 
   ExternalLink, RefreshCw, Key, ShieldCheck, Zap, Server, Globe, HelpCircle, X,
-  Radio, FileCode, Sliders, ArrowRight, RotateCcw
+  Radio, FileCode, Sliders, ArrowRight, RotateCcw, Share2
 } from 'lucide-react';
 import { activeFirebaseConfig, getFirebaseConfig, saveCustomFirebaseConfig, FirebaseConfigType } from '../lib/firebase';
 import { getLatencySummary, pullAllRemoteDataFromFirebase, pushAllLocalDataToFirebase } from '../lib/firebaseSync';
@@ -163,6 +163,14 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
     downloadAnchor.click();
     downloadAnchor.remove();
     toast.success('File firebase-applet-config.json berhasil diunduh!');
+  };
+
+  const handleCopySyncLink = () => {
+    const cfg = customConfig.projectId ? customConfig : activeFirebaseConfig;
+    const encoded = btoa(encodeURIComponent(JSON.stringify(cfg)));
+    const syncUrl = `${window.location.origin}${window.location.pathname}?db_config=${encoded}`;
+    navigator.clipboard.writeText(syncUrl);
+    toast.success('Link Sync Database berhasil disalin! Buka link ini di HP/Laptop lain agar langsung terhubung.');
   };
 
   // Generate .env string for Vercel / Netlify / Vite
@@ -442,13 +450,24 @@ VITE_FIREBASE_MESSAGING_SENDER_ID="${activeFirebaseConfig.messagingSenderId}"`;
                   <RotateCcw className="w-4 h-4" />
                   Kembalikan ke Database Bawaan Sistem
                 </button>
-                <button
-                  type="submit"
-                  className="w-full sm:w-auto ml-auto px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/40 transition-all cursor-pointer"
-                >
-                  <ShieldCheck className="w-4 h-4" />
-                  Simpan & Terhubung ke Database Baru
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto ml-auto">
+                  <button
+                    type="button"
+                    onClick={handleCopySyncLink}
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    title="Salin URL dengan parameter konfigurasi database ini untuk dibuka di perangkat/HP lain"
+                  >
+                    <Share2 className="w-4 h-4 text-indigo-400" />
+                    Salin Link Sync Perangkat
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-lg shadow-indigo-900/40 transition-all cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    Simpan & Terhubung ke Database Baru
+                  </button>
+                </div>
               </div>
             </form>
           )}

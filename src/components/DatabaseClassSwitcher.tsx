@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Database, ArrowRightLeft, Check, Sparkles, AlertCircle, Info, RefreshCw, Shield, Layers } from 'lucide-react';
-import { getActiveDatabaseId, switchFirestoreDatabase } from '../lib/firebase';
+import { Database, ArrowRightLeft, Check, Sparkles, AlertCircle, Info, RefreshCw, Shield, Layers, Share2, Globe, Laptop } from 'lucide-react';
+import { getActiveDatabaseId, switchFirestoreDatabase, syncDatabaseConfigToCloud } from '../lib/firebase';
 import toast from 'react-hot-toast';
 
 export default function DatabaseClassSwitcher() {
@@ -12,7 +12,7 @@ export default function DatabaseClassSwitcher() {
     setActiveDbId(getActiveDatabaseId());
   }, []);
 
-  const handleApplySwitch = (targetDbId: string) => {
+  const handleApplySwitch = async (targetDbId: string) => {
     const cleanId = targetDbId.trim() || '(default)';
     if (cleanId === activeDbId) {
       toast.success(`Aplikasi sudah terhubung ke Database ID: "${cleanId}"`);
@@ -20,12 +20,13 @@ export default function DatabaseClassSwitcher() {
     }
 
     setIsChanging(true);
-    toast.loading(`Memindahkan koneksi aplikasi ke Database ID "${cleanId}"...`, { id: 'switch-db' });
+    toast.loading(`Memindahkan koneksi aplikasi ke Database ID "${cleanId}" & menyinkronkan ke Cloud Firestore...`, { id: 'switch-db' });
 
     try {
       switchFirestoreDatabase(cleanId);
       setActiveDbId(cleanId);
-      toast.success(`Berhasil berpindah ke Database ID "${cleanId}"! Memuat ulang data...`, { id: 'switch-db', duration: 4000 });
+      await syncDatabaseConfigToCloud(null);
+      toast.success(`Berhasil berpindah ke Database ID "${cleanId}" & disinkronkan ke Cloud! Perangkat lain akan otomatis menggunakan database ini.`, { id: 'switch-db', duration: 5000 });
       
       setTimeout(() => {
         setIsChanging(false);
@@ -36,6 +37,13 @@ export default function DatabaseClassSwitcher() {
       toast.error(`Gagal berpindah database: ${err?.message || 'Error'}`, { id: 'switch-db' });
       setIsChanging(false);
     }
+  };
+
+  const handleCopyClassSyncLink = (dbId: string) => {
+    const cleanId = dbId.trim() || '(default)';
+    const syncUrl = `${window.location.origin}${window.location.pathname}?db_id=${encodeURIComponent(cleanId)}`;
+    navigator.clipboard.writeText(syncUrl);
+    toast.success(`Link Sync Database "${cleanId}" berhasil disalin! Buka link ini di HP/Laptop lain agar langsung terhubung.`);
   };
 
   const presetDatabases = [
@@ -115,13 +123,19 @@ export default function DatabaseClassSwitcher() {
         </div>
       </div>
 
-      {/* Custom Database ID Input */}
+      {/* Custom Database ID Input & Share Link */}
       <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-800 space-y-3">
-        <label className="block text-xs font-semibold text-slate-300">
-          Kustom Database ID Firestore
-        </label>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+          <label className="block text-xs font-semibold text-slate-300">
+            Kustom Database ID Firestore & Link Sync Perangkat
+          </label>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-950/60 border border-emerald-500/40 rounded-lg text-[11px] font-medium text-emerald-300">
+            <Globe size={12} className="text-emerald-400 animate-pulse" />
+            <span>Sinkronisasi Lintas Perangkat: Aktif (Cloud Firestore)</span>
+          </span>
+        </div>
         <p className="text-xs text-slate-400">
-          Jika Anda membuat database khusus tambahan di Firebase Console (misal: <code className="text-indigo-300 font-mono">db-kelas-7c</code> atau <code className="text-indigo-300 font-mono">db-sd-juara</code>), masukkan ID-nya di bawah ini:
+          Jika Anda membuat database khusus tambahan di Firebase Console (misal: <code className="text-indigo-300 font-mono">db-kelas-7c</code>), masukkan ID-nya atau bagikan link sync ke HP/laptop lain:
         </p>
         <div className="flex flex-col sm:flex-row gap-2">
           <input
@@ -135,10 +149,19 @@ export default function DatabaseClassSwitcher() {
             type="button"
             onClick={() => handleApplySwitch(inputDbId)}
             disabled={isChanging || !inputDbId.trim()}
-            className="flex items-center justify-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md transition-all cursor-pointer disabled:opacity-50"
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md transition-all cursor-pointer disabled:opacity-50"
           >
             <RefreshCw size={14} className={isChanging ? 'animate-spin' : ''} />
             <span>Terapkan Database ID</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleCopyClassSyncLink(inputDbId || activeDbId)}
+            className="flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+            title="Salin URL khusus yang membawa parameter database ini untuk dibuka di perangkat lain"
+          >
+            <Share2 size={14} className="text-indigo-400" />
+            <span>Salin Link Sync Perangkat</span>
           </button>
         </div>
       </div>
