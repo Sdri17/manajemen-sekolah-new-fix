@@ -13,6 +13,8 @@ import toast from 'react-hot-toast';
 import { pushDataToSheets, pullDataFromSheets, getSyncStats, validateStudentData } from './lib/sync';
 import { startBackgroundIntegrityObserver } from './lib/integrityObserver';
 import { initFirebaseRealtimeSync, pushAllLocalDataToFirebase, pullAllRemoteDataFromFirebase, fetchLatestUsersFromFirebase, verifySiswaCollectionSecurityRules } from './lib/firebaseSync';
+import { fetchRemoteFirebaseConfig } from './lib/remoteConfigLoader';
+import { syncDatabaseConfigFromCloud } from './lib/firebase';
 import { sanitizeInput, sanitizeUsername, containsSqlInjection, getLockoutStatus, recordFailedAttempt, resetFailedAttempts } from './lib/security';
 import { logAuditEvent } from './lib/auditLogger';
 import { RefreshCw, Eye, EyeOff, ShieldAlert, Lock, AlertTriangle } from 'lucide-react';
@@ -316,8 +318,12 @@ function MainAppContent() {
         }
       }
 
-      // Defer heavy background tasks (integrity check & realtime sync & rules verification) to allow instant UI paint
-      setTimeout(() => {
+      // Defer heavy background tasks (integrity check & realtime sync & rules verification & remote database config check)
+      setTimeout(async () => {
+        try {
+          await fetchRemoteFirebaseConfig();
+          await syncDatabaseConfigFromCloud();
+        } catch (_e) {}
         startBackgroundIntegrityObserver();
         initFirebaseRealtimeSync();
         verifySiswaCollectionSecurityRules();

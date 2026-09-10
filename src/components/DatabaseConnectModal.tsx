@@ -142,15 +142,17 @@ export default function DatabaseConnectModal({ isOpen, onClose }: DatabaseConnec
   };
 
   const handleResetDefaultConfig = () => {
-    if (confirm('Apakah Anda yakin ingin mengembalikan seluruh konfigurasi database ke Bawaan Sistem?')) {
+    if (confirm('Apakah Anda yakin ingin mengembalikan konfigurasi database ke file bawaan Vercel Server (firebase-applet-config.json)?')) {
       if (typeof window !== 'undefined') {
         localStorage.removeItem('custom_firebase_config');
         localStorage.removeItem('active_firestore_database_id');
+        localStorage.removeItem('edusync_debug_lock_active');
+        localStorage.removeItem('edusync_dev_active_profile_id');
+        document.cookie = "edusync_custom_firebase_config=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        document.cookie = "edusync_active_firestore_database_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
       }
-      toast.success('Database berhasil dikembalikan ke konfigurasi bawaan sistem. Memuat ulang...');
-      setTimeout(() => {
-        saveCustomFirebaseConfig(null);
-      }, 300);
+      toast.success('Database dikembalikan ke Vercel Server Live Config (firebase-applet-config.json)!');
+      saveCustomFirebaseConfig(null);
     }
   };
 
