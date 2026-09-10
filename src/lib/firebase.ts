@@ -343,6 +343,9 @@ export function saveCustomFirebaseConfig(config: Partial<FirebaseConfigType> | n
     eraseCookie('edusync_custom_firebase_config');
     eraseCookie('edusync_active_firestore_database_id');
   } else {
+    if (config.projectId) {
+      Object.assign(activeFirebaseConfig, config);
+    }
     const jsonStr = JSON.stringify(config);
     localStorage.setItem('custom_firebase_config', jsonStr);
     setCookie('edusync_custom_firebase_config', jsonStr, 30);
@@ -462,6 +465,38 @@ export async function verifyFirestoreConfigPing(): Promise<{ reinitialized: bool
   }
 
   return { reinitialized: false, activeProjectId: activeFirebaseConfig.projectId };
+}
+
+/**
+ * Checks the global build timestamp/deployment version against the one stored in local storage.
+ * If a mismatch is detected (a new deployment was published to Vercel/Cloud), it purges stale cache
+ * and triggers a clean reload to guarantee the browser runs the latest deployment assets.
+ */
+export function checkBuildVersionMismatch(): boolean {
+  if (typeof window === 'undefined') return false;
+
+  const currentBuildVersion = (import.meta as any).env?.VITE_BUILD_TIME || 
+    document.querySelector('meta[name="build-version"]')?.getAttribute('content');
+
+  if (!currentBuildVersion) return false;
+
+  const storedBuildVersion = localStorage.getItem('edusync_app_build_version');
+
+  if (storedBuildVersion && storedBuildVersion !== currentBuildVersion) {
+    console.warn(`[BuildVersionCheck] New deployment version detected! Current build: ${currentBuildVersion}, Stored build: ${storedBuildVersion}. Purging stale cache & triggering clean reload...`);
+    localStorage.setItem('edusync_app_build_version', currentBuildVersion);
+    clearRuntimeConfigCache();
+    window.location.reload();
+    return true;
+  }
+
+  localStorage.setItem('edusync_app_build_version', currentBuildVersion);
+  return false;
+}
+
+// Auto-run build version check on module load in browser
+if (typeof window !== 'undefined') {
+  checkBuildVersionMismatch();
 }
 
 export default app;

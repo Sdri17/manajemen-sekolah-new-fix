@@ -3,9 +3,27 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+const buildTimestamp = new Date().toISOString();
+
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    define: {
+      'import.meta.env.VITE_BUILD_TIME': JSON.stringify(buildTimestamp),
+      '__BUILD_TIMESTAMP__': JSON.stringify(buildTimestamp)
+    },
+    plugins: [
+      react(), 
+      tailwindcss(),
+      {
+        name: 'inject-build-timestamp-meta',
+        transformIndexHtml(html) {
+          return html.replace(
+            '</head>',
+            `  <meta name="build-version" content="${buildTimestamp}" />\n  <meta name="build-timestamp" content="${buildTimestamp}" />\n</head>`
+          );
+        }
+      }
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
@@ -46,3 +64,4 @@ export default defineConfig(() => {
     }
   };
 });
+

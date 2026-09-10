@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getActiveProjectDetails, fetchRuntimeFirebaseConfig, ActiveProjectDetails } from '../lib/configLoader';
-import { app } from '../lib/firebase';
+import { app, getFirebaseConfig } from '../lib/firebase';
 import DeploymentDiagnosticModal from './DeploymentDiagnosticModal';
 import { Database, CheckCircle2, RefreshCw, Server, Cpu, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -49,7 +49,8 @@ export default function ActiveDatabaseIndicator() {
     }
   };
 
-  const sdkProjectId = app?.options?.projectId || projectDetails.projectId;
+  const activeCfg = getFirebaseConfig();
+  const sdkProjectId = projectDetails.projectId || activeCfg.projectId || app?.options?.projectId;
 
   return (
     <>

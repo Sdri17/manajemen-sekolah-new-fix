@@ -1,4 +1,4 @@
-import { app, activeFirebaseConfig, getActiveDatabaseId, FirebaseConfigType } from './firebase';
+import { app, getFirebaseConfig, activeFirebaseConfig, getActiveDatabaseId, FirebaseConfigType } from './firebase';
 import defaultConfig from '../../firebase-applet-config.json';
 
 export interface ActiveProjectDetails {
@@ -12,14 +12,14 @@ export interface ActiveProjectDetails {
 
 /**
  * Utility function to pull the Active Project ID and configuration
- * directly from the initialized Firebase SDK (`app.options`).
- * This guarantees verification of what database settings the active deployment is currently using.
+ * directly from the active Firebase configuration (favoring localStorage custom config over stale SDK defaults).
  */
 export function getActiveProjectDetails(): ActiveProjectDetails {
+  const activeCfg = getFirebaseConfig();
   const sdkOptions = app?.options || {};
-  const projectId = sdkOptions.projectId || activeFirebaseConfig.projectId || defaultConfig.projectId || 'unknown';
-  const authDomain = sdkOptions.authDomain || activeFirebaseConfig.authDomain || defaultConfig.authDomain || '-';
-  const appId = sdkOptions.appId || activeFirebaseConfig.appId || defaultConfig.appId || '-';
+  const projectId = activeCfg.projectId || sdkOptions.projectId || activeFirebaseConfig.projectId || defaultConfig.projectId || 'unknown';
+  const authDomain = activeCfg.authDomain || sdkOptions.authDomain || activeFirebaseConfig.authDomain || defaultConfig.authDomain || '-';
+  const appId = activeCfg.appId || sdkOptions.appId || activeFirebaseConfig.appId || defaultConfig.appId || '-';
   const firestoreDatabaseId = getActiveDatabaseId();
 
   let source: ActiveProjectDetails['source'] = 'firebase_sdk';
