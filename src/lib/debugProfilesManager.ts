@@ -22,7 +22,7 @@ const STORAGE_KEY_ACTIVE_ID = 'edusync_dev_active_profile_id';
  * Returns default system profile built from firebase-applet-config.json
  */
 export function getDefaultSystemProfile(): FirebaseDebugProfile {
-  const cfg = defaultConfig as FirebaseConfigType;
+  const cfg = getRemoteFirebaseConfig() || (defaultConfig as FirebaseConfigType);
   return {
     id: 'profile-system-default',
     name: 'Default Applet Config',

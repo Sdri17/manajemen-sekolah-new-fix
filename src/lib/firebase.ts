@@ -274,26 +274,39 @@ export async function syncDatabaseConfigToCloud(customConfig?: Partial<FirebaseC
 export async function syncDatabaseConfigFromCloud(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   try {
-    const primaryDb = getActiveDatabaseId() === '(default)' ? db : createFirestoreInstance('(default)');
+    const isDevDebugLocked = 
+      localStorage.getItem('edusync_debug_lock_active') === 'true' ||
+      (localStorage.getItem('edusync_dev_active_profile_id') && 
+       localStorage.getItem('edusync_dev_active_profile_id') !== 'profile-system-default');
+
+    const currentActive = getFirebaseConfig();
+    const currentDbId = getActiveDatabaseId();
+
+    const primaryDb = currentDbId === '(default)' ? db : createFirestoreInstance('(default)');
     const configDocRef = doc(primaryDb, 'school_settings', 'global_database_config');
     const snap = await getDoc(configDocRef);
 
     if (snap.exists()) {
       const remote = snap.data() as FirebaseConfigType & { updatedAt?: string };
       if (remote && remote.projectId && remote.apiKey) {
-        const currentActive = getFirebaseConfig();
-        const currentDbId = getActiveDatabaseId();
-
-        const isDifferentProj = remote.projectId !== currentActive.projectId;
-        const isDifferentDb = remote.firestoreDatabaseId !== (currentActive.firestoreDatabaseId || currentDbId);
-
-        if (isDifferentProj || isDifferentDb) {
-          console.log(`[CloudConfigSync] Remote database config detected from another device! Project: ${remote.projectId}, Database ID: ${remote.firestoreDatabaseId}`);
-          
-          saveCustomFirebaseConfig(remote);
-          if (remote.firestoreDatabaseId && remote.firestoreDatabaseId !== currentDbId) {
-            switchFirestoreDatabase(remote.firestoreDatabaseId);
+        
+        // If the remote document has a DIFFERENT projectId than currentActive
+        // AND the developer did NOT explicitly lock a custom debug profile:
+        // DO NOT overwrite currentActive with the foreign projectId!
+        // Instead, update the Cloud Firestore document to match the deployed build project ID.
+        if (remote.projectId !== currentActive.projectId) {
+          if (!isDevDebugLocked) {
+            console.log(`[CloudConfigSync] Firestore doc has stale projectId (${remote.projectId}) while deployed build has (${currentActive.projectId}). Aligning Firestore doc with deployed build...`);
+            syncDatabaseConfigToCloud(currentActive).catch(() => {});
+            return false;
           }
+        }
+
+        // Only sync database ID switch if it belongs to the SAME project ID
+        const isDifferentDb = remote.firestoreDatabaseId && remote.firestoreDatabaseId !== currentDbId;
+        if (isDifferentDb && remote.projectId === currentActive.projectId) {
+          console.log(`[CloudConfigSync] Remote database ID switch detected within project ${remote.projectId}: ${remote.firestoreDatabaseId}`);
+          switchFirestoreDatabase(remote.firestoreDatabaseId);
           return true;
         }
       }
