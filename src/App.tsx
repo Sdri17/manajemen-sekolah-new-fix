@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
+import { motion } from 'motion/react';
 import { store, initializeStore, Settings, AppUser } from './lib/store';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SchoolProvider } from './context/SchoolContext';
@@ -609,7 +610,12 @@ function MainAppContent() {
       <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-4 relative font-sans">
         <Toaster position="top-right" toastOptions={{ duration: 5000, style: { background: '#1e293b', color: '#f1f5f9', border: '1px solid #334155' } }} />
         <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_50%,rgba(99,102,241,0.08)_0%,transparent_100%)]"></div>
-        <div className="bg-slate-800 border border-slate-700/80 p-8 rounded-2xl max-w-md w-full space-y-6 relative z-10 shadow-2xl">
+        <motion.div 
+          initial={{ opacity: 0, y: 24, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+          className="bg-slate-800 border border-slate-700/80 p-8 rounded-2xl max-w-md w-full space-y-6 relative z-10 shadow-2xl"
+        >
           <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-500/30">
             <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
@@ -833,7 +839,7 @@ function MainAppContent() {
               )}
             </div>
           )}
-        </div>
+        </motion.div>
       </div>
     );
   }
